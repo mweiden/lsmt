@@ -6,12 +6,12 @@ pub struct ZoneMap {
 
 impl ZoneMap {
     pub fn update(&mut self, key: &str) {
-        match &self.min {
+        match self.min.as_deref() {
             Some(min) if key < min => self.min = Some(key.to_string()),
             None => self.min = Some(key.to_string()),
             _ => {}
         }
-        match &self.max {
+        match self.max.as_deref() {
             Some(max) if key > max => self.max = Some(key.to_string()),
             None => self.max = Some(key.to_string()),
             _ => {}
@@ -19,7 +19,7 @@ impl ZoneMap {
     }
 
     pub fn contains(&self, key: &str) -> bool {
-        match (&self.min, &self.max) {
+        match (self.min.as_deref(), self.max.as_deref()) {
             (Some(min), Some(max)) => key >= min && key <= max,
             _ => true,
         }
