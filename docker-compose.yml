@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  lsmt:
+    build: .
+    volumes:
+      - ./data:/data
+    environment:
+      - LSMT_DATA=/data
+    ports:
+      - "8080:8080"
