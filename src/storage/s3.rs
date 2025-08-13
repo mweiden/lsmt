@@ -1,21 +1,50 @@
 use super::{Storage, StorageError};
 use async_trait::async_trait;
+use s3::creds::Credentials;
+use s3::Bucket;
+use s3::Region;
+use std::io::{Error, ErrorKind};
 
-pub struct S3Storage;
+pub struct S3Storage {
+    bucket: Box<Bucket>,
+}
 
 impl S3Storage {
-    pub fn new(_bucket: &str) -> Self {
-        Self
+    pub async fn new(bucket: &str) -> Result<Self, StorageError> {
+        let creds = Credentials::from_env().map_err(|e: s3::creds::error::CredentialsError| {
+            StorageError::Io(Error::new(ErrorKind::Other, e.to_string()))
+        })?;
+        let region: Region = std::env::var("AWS_REGION")
+            .unwrap_or_else(|_| "us-east-1".to_string())
+            .parse::<Region>()
+            .map_err(|e: std::str::Utf8Error| {
+                StorageError::Io(Error::new(ErrorKind::Other, e.to_string()))
+            })?;
+        let bucket = Bucket::new(bucket, region, creds)
+            .map_err(|e: s3::error::S3Error| {
+                StorageError::Io(Error::new(ErrorKind::Other, e.to_string()))
+            })?
+            .with_path_style();
+        Ok(Self { bucket })
     }
 }
 
 #[async_trait]
 impl Storage for S3Storage {
-    async fn put(&self, _path: &str, _data: Vec<u8>) -> Result<(), StorageError> {
-        Err(StorageError::Unimplemented)
+    async fn put(&self, path: &str, data: Vec<u8>) -> Result<(), StorageError> {
+        self.bucket
+            .put_object(path, &data)
+            .await
+            .map_err(|e| StorageError::Io(Error::new(ErrorKind::Other, e.to_string())))?;
+        Ok(())
     }
 
-    async fn get(&self, _path: &str) -> Result<Vec<u8>, StorageError> {
-        Err(StorageError::Unimplemented)
+    async fn get(&self, path: &str) -> Result<Vec<u8>, StorageError> {
+        let resp = self
+            .bucket
+            .get_object(path)
+            .await
+            .map_err(|e| StorageError::Io(Error::new(ErrorKind::Other, e.to_string())))?;
+        Ok(resp.bytes().to_vec())
     }
 }
