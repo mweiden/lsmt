@@ -1,0 +1,11 @@
+[package]
+name = "lsmt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+sqlparser = "0.58"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "sync"] }
+thiserror = "1"
