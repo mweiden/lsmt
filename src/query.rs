@@ -56,6 +56,7 @@ impl SqlEngine {
         Ok(result)
     }
 
+    /// Execute a single parsed SQL [`Statement`].
     async fn execute_stmt<S: Storage + Sync + Send>(
         &self,
         db: &Database<S>,
@@ -104,11 +105,13 @@ impl SqlEngine {
         }
     }
 
+    /// Handle an `INSERT` statement inserting a single key/value pair.
     async fn exec_insert<S: Storage + Sync + Send>(
         &self,
         db: &Database<S>,
         insert: Insert,
     ) -> Result<(), QueryError> {
+        // Extract the target namespace/table name.
         let ns = match &insert.table {
             sqlparser::ast::TableObject::TableName(name) => {
                 object_name_to_ns(name).ok_or(QueryError::Unsupported)?
@@ -125,6 +128,7 @@ impl SqlEngine {
         if row.len() != 2 {
             return Err(QueryError::Unsupported);
         }
+        // Parse key and value expressions expecting single quoted strings.
         let key = match &row[0] {
             Expr::Value(v) => match &v.value {
                 Value::SingleQuotedString(s) => s.clone(),
@@ -143,6 +147,7 @@ impl SqlEngine {
         Ok(())
     }
 
+    /// Handle an `UPDATE` statement that sets the value for a single key.
     async fn exec_update<S: Storage + Sync + Send>(
         &self,
         db: &Database<S>,
@@ -152,6 +157,7 @@ impl SqlEngine {
     ) -> Result<(), QueryError> {
         let ns = table_factor_to_ns(&table.relation).ok_or(QueryError::Unsupported)?;
         register_table(db, &ns).await;
+        // Extract the key from the WHERE clause; only equality is supported.
         let key = if let Some(expr) = selection {
             if let Expr::BinaryOp { left, op, right } = expr {
                 if op == BinaryOperator::Eq {
@@ -177,6 +183,7 @@ impl SqlEngine {
         } else {
             return Err(QueryError::Unsupported);
         };
+        // Find new value assignment.
         let mut new_val = None;
         for assign in assignments {
             if let AssignmentTarget::ColumnName(name) = assign.target {
@@ -196,6 +203,7 @@ impl SqlEngine {
         Ok(())
     }
 
+    /// Handle a `DELETE` statement for a single key.
     async fn exec_delete<S: Storage + Sync + Send>(
         &self,
         db: &Database<S>,
@@ -209,6 +217,7 @@ impl SqlEngine {
         }
         let ns = table_factor_to_ns(&table[0].relation).ok_or(QueryError::Unsupported)?;
         register_table(db, &ns).await;
+        // Only support deletion by exact key equality.
         if let Some(expr) = delete.selection {
             if let Expr::BinaryOp { left, op, right } = expr {
                 if op == BinaryOperator::Eq {
@@ -225,6 +234,7 @@ impl SqlEngine {
         Ok(())
     }
 
+    /// Execute the inner query of a [`Statement::Query`].
     async fn exec_query<S: Storage + Sync + Send>(
         &self,
         db: &Database<S>,
@@ -239,6 +249,7 @@ impl SqlEngine {
         }
     }
 
+    /// Execute a `SELECT` statement returning at most one row/value.
     async fn exec_select<S: Storage + Sync + Send>(
         &self,
         db: &Database<S>,
@@ -262,11 +273,13 @@ impl SqlEngine {
             }
         }
 
+        // Apply DISTINCT by sorting and removing duplicates.
         if select.distinct.is_some() {
             rows.sort_by(|a, b| a.cmp(b));
             rows.dedup();
         }
 
+        // Handle simple ORDER BY on a single column.
         if let Some(order) = order {
             if let OrderByKind::Expressions(exprs) = order.kind {
                 if let Some(ob) = exprs.first() {
@@ -312,6 +325,7 @@ impl SqlEngine {
         Ok(result)
     }
 
+    /// Execute a `SELECT` with a single `GROUP BY` expression.
     fn exec_group_select(
         &self,
         group_exprs: &Vec<Expr>,
@@ -352,6 +366,7 @@ impl SqlEngine {
         Ok(out.into_iter().next())
     }
 
+    /// Return a newline-delimited list of registered table names.
     async fn exec_show_tables<S: Storage + Sync + Send>(
         &self,
         db: &Database<S>,
@@ -363,12 +378,14 @@ impl SqlEngine {
     }
 }
 
+/// Register a table name in the internal catalog if it does not already exist.
 async fn register_table<S: Storage + Sync + Send>(db: &Database<S>, table: &str) {
     if db.get_ns("_tables", table).await.is_none() {
         db.insert_ns("_tables", table.to_string(), Vec::new()).await;
     }
 }
 
+/// Convert an AST [`ObjectName`] into a lowercase namespace string.
 fn object_name_to_ns(name: &ObjectName) -> Option<String> {
     name
         .0
@@ -377,6 +394,7 @@ fn object_name_to_ns(name: &ObjectName) -> Option<String> {
         .map(|i| i.value.to_lowercase())
 }
 
+/// Extract a namespace from a [`TableFactor`].
 fn table_factor_to_ns(tf: &TableFactor) -> Option<String> {
     match tf {
         TableFactor::Table { name, .. } => object_name_to_ns(name),
@@ -384,6 +402,7 @@ fn table_factor_to_ns(tf: &TableFactor) -> Option<String> {
     }
 }
 
+/// Retrieve the requested column value from a key/value pair.
 fn column_value(col: &str, key: &str, val: &[u8]) -> String {
     if col == "key" {
         key.to_string()
@@ -392,6 +411,7 @@ fn column_value(col: &str, key: &str, val: &[u8]) -> String {
     }
 }
 
+/// Evaluate a simple expression against a row, returning the result as a string.
 fn eval_expr(expr: &Expr, key: &str, val: &[u8]) -> Option<String> {
     match expr {
         Expr::Identifier(id) => Some(column_value(&id.value.to_lowercase(), key, val)),
@@ -416,6 +436,7 @@ fn eval_expr(expr: &Expr, key: &str, val: &[u8]) -> Option<String> {
     }
 }
 
+/// Evaluate a boolean condition against a key/value pair.
 fn eval_cond(expr: &Expr, key: &str, val: &[u8]) -> bool {
     match expr {
         Expr::BinaryOp { left, op, right } => {
@@ -454,6 +475,7 @@ fn eval_cond(expr: &Expr, key: &str, val: &[u8]) -> bool {
     }
 }
 
+/// Execute a simple aggregate function over the provided `rows`.
 fn handle_function(func: &Function, rows: &[(String, Vec<u8>)]) -> Result<Vec<u8>, QueryError> {
     let name = func.name.to_string().to_lowercase();
     match name.as_str() {
@@ -481,6 +503,7 @@ fn handle_function(func: &Function, rows: &[(String, Vec<u8>)]) -> Result<Vec<u8
     }
 }
 
+/// Return the first argument expression from a function call.
 fn extract_func_expr(func: &Function) -> Result<&Expr, QueryError> {
     if let FunctionArguments::List(list) = &func.args {
         if let Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(expr))) = list.args.first() {
@@ -493,6 +516,7 @@ fn extract_func_expr(func: &Function) -> Result<&Expr, QueryError> {
     }
 }
 
+/// Extract a numeric limit value from a [`LimitClause`].
 fn extract_limit(lc: &LimitClause) -> Option<usize> {
     match lc {
         LimitClause::LimitOffset { limit: Some(Expr::Value(v)), .. } |
@@ -507,6 +531,7 @@ fn extract_limit(lc: &LimitClause) -> Option<usize> {
     }
 }
 
+/// Apply a LIMIT clause to a vector of row tuples.
 fn apply_limit_rows(rows: &mut Vec<(String, Vec<u8>)>, lc: &LimitClause) {
     if let Some(l) = extract_limit(lc) {
         if rows.len() > l {
@@ -515,6 +540,7 @@ fn apply_limit_rows(rows: &mut Vec<(String, Vec<u8>)>, lc: &LimitClause) {
     }
 }
 
+/// Apply a LIMIT clause to a generic vector.
 fn apply_limit_vec<T>(v: &mut Vec<T>, lc: &LimitClause) {
     if let Some(l) = extract_limit(lc) {
         if v.len() > l {

@@ -1,29 +1,36 @@
 use std::collections::BTreeMap;
 use tokio::sync::RwLock;
 
+/// Thread-safe in-memory table backed by a `BTreeMap`.
 pub struct MemTable {
+    /// Protected map storing raw key/value pairs.
     data: RwLock<BTreeMap<String, Vec<u8>>>,
 }
 
 impl MemTable {
+    /// Create a new, empty [`MemTable`].
     pub fn new() -> Self {
         Self {
             data: RwLock::new(BTreeMap::new()),
         }
     }
 
+    /// Insert a `key`/`value` pair into the table.
     pub async fn insert(&self, key: String, value: Vec<u8>) {
         self.data.write().await.insert(key, value);
     }
 
+    /// Retrieve the value for `key` if it exists.
     pub async fn get(&self, key: &str) -> Option<Vec<u8>> {
         self.data.read().await.get(key).cloned()
     }
 
+    /// Remove a `key` from the table.
     pub async fn delete(&self, key: &str) {
         self.data.write().await.remove(key);
     }
 
+    /// Return all entries currently stored in the table.
     pub async fn scan(&self) -> Vec<(String, Vec<u8>)> {
         self.data
             .read()
@@ -33,21 +40,27 @@ impl MemTable {
             .collect()
     }
 
+    /// Return the number of entries in the table.
     pub async fn len(&self) -> usize {
         self.data.read().await.len()
     }
 
+    /// Remove all entries from the table.
     pub async fn clear(&self) {
         self.data.write().await.clear();
     }
 
+    /// Delete every key that begins with `prefix`.
     pub async fn delete_prefix(&self, prefix: &str) {
         let mut data = self.data.write().await;
+        // Collect matching keys first to avoid holding references while
+        // mutating the map.
         let keys: Vec<String> = data
             .keys()
             .filter(|k| k.starts_with(prefix))
             .cloned()
             .collect();
+        // Remove each key individually.
         for k in keys {
             data.remove(&k);
         }
