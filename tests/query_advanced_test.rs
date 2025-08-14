@@ -65,10 +65,6 @@ async fn table_names_group_by_and_cast() {
     let engine = SqlEngine::new();
 
     engine
-        .execute(&db, "CREATE DATABASE foo")
-        .await
-        .unwrap();
-    engine
         .execute(&db, "CREATE TABLE foo.kv")
         .await
         .unwrap();
