@@ -33,6 +33,10 @@ impl MemTable {
             .collect()
     }
 
+    pub async fn len(&self) -> usize {
+        self.data.read().await.len()
+    }
+
     pub async fn clear(&self) {
         self.data.write().await.clear();
     }
