@@ -84,7 +84,6 @@ impl SqlEngine {
                 register_table(db, &ns).await;
                 Ok(None)
             }
-            Statement::CreateDatabase { .. } => Ok(None),
             Statement::ShowTables { .. } => self.exec_show_tables(db).await,
             Statement::Drop {
                 object_type: ObjectType::Table,
