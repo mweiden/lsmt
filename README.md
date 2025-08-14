@@ -10,6 +10,19 @@ Experimental log-structured merge tree database written in Rust.
 - Basic SQL parsing via [`sqlparser`]
 - Dockerfile and docker-compose for containerized deployment
 
+## Supported Queries
+
+The built-in SQL engine understands a small subset of SQL that is geared
+toward key/value access:
+
+- `INSERT` of a `key`/`value` pair into a table
+- `UPDATE` and `DELETE` statements targeting a single key
+- `SELECT` with optional `WHERE` filters, `ORDER BY`, `GROUP BY`,
+  `DISTINCT`, simple aggregate functions (`COUNT`, `MIN`, `MAX`, `SUM`)
+  and `LIMIT`
+- Table management statements such as `CREATE TABLE`, `DROP TABLE` and
+  `SHOW TABLES`
+
 ## Development
 
 ```bash

@@ -4,16 +4,23 @@ use crate::zonemap::ZoneMap;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 
+// field delimiters within on-disk table files
 const SEP: u8 = b'\t';
 const NL: u8 = b'\n';
 
+/// Simplified on-disk sorted string table used for persisting flushed
+/// memtable data.
 pub struct SsTable {
+    /// Path to the file storing the SSTable contents.
     pub path: String,
+    /// Bloom filter over the keys to quickly rule out non-existent lookups.
     pub bloom: BloomFilter,
+    /// Zone map storing min/max keys for coarse filtering.
     pub zone_map: ZoneMap,
 }
 
 impl SsTable {
+    /// Create an empty [`SsTable`] with default bloom filter and zone map.
     pub fn new(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
@@ -22,6 +29,8 @@ impl SsTable {
         }
     }
 
+    /// Write a new table to disk from the provided `entries` and return
+    /// the constructed [`SsTable`] metadata.
     pub async fn create<S: Storage + Sync + Send>(
         path: impl Into<String>,
         entries: &[(String, Vec<u8>)],
@@ -32,8 +41,10 @@ impl SsTable {
         let mut zone_map = ZoneMap::default();
         let mut data = Vec::new();
         for (k, v) in entries {
+            // update auxiliary structures
             bloom.insert(k);
             zone_map.update(k);
+            // write "key\tbase64(value)\n" lines
             data.extend_from_slice(k.as_bytes());
             data.push(SEP);
             let enc = STANDARD.encode(v);
@@ -44,6 +55,8 @@ impl SsTable {
         Ok(Self { path, bloom, zone_map })
     }
 
+    /// Retrieve a value from the table, consulting bloom filter and zone
+    /// map before scanning the file.
     pub async fn get<S: Storage + Sync + Send>(
         &self,
         key: &str,
@@ -57,9 +70,11 @@ impl SsTable {
             if line.is_empty() {
                 continue;
             }
+            // locate separator between key and value
             if let Some(pos) = line.iter().position(|b| *b == SEP) {
                 let (k, v) = line.split_at(pos);
                 if k == key.as_bytes() {
+                    // value bytes are base64 encoded after the separator
                     let val = STANDARD
                         .decode(&v[1..])
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
