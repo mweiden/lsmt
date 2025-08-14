@@ -13,7 +13,20 @@ Experimental log-structured merge tree database written in Rust.
 ## Development
 
 ```bash
-cargo test
+cargo test            # run unit tests
+cargo run             # start the HTTP query service on port 8080
+```
+
+## Example
+
+With the server running you can insert and query data over HTTP:
+
+```bash
+# add a key/value pair
+curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
+
+# fetch the previously inserted value
+curl -X POST localhost:8080/query -d "SELECT value FROM kv WHERE key = 'hello'"
 ```
 
 The project is a scaffold and many components are left for future work.

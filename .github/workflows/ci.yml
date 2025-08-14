@@ -21,3 +21,5 @@ jobs:
         run: cargo test --lib
       - name: Run e2e tests
         run: cargo test --test e2e_local
+      - name: Run query endpoint test
+        run: cargo test --test query_http_test
