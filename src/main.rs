@@ -1,11 +1,33 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{extract::State, http::StatusCode, routing::post, Router};
-use lsmt::{storage::local::LocalStorage, Database, SqlEngine};
+use clap::{Parser, ValueEnum};
+use lsmt::{
+    storage::{local::LocalStorage, s3::S3Storage, Storage},
+    Database, SqlEngine,
+};
+
+type DynStorage = Box<dyn Storage>;
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long, default_value = "local", value_enum)]
+    storage: StorageKind,
+    #[arg(long, default_value = "/tmp/lsmt-data")]
+    data_dir: String,
+    #[arg(long)]
+    bucket: Option<String>,
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum StorageKind {
+    Local,
+    S3,
+}
 
 /// Handle incoming SQL queries sent to the server.
 async fn handle_query(
-    State(db): State<Arc<Database<LocalStorage>>>,
+    State(db): State<Arc<Database<DynStorage>>>,
     body: String,
 ) -> (StatusCode, String) {
     let engine = SqlEngine::new();
@@ -22,7 +44,21 @@ async fn handle_query(
 /// Start an HTTP server exposing the database at `/query`.
 #[tokio::main]
 async fn main() {
-    let storage = LocalStorage::new("/tmp/lsmt-data");
+    let args = Args::parse();
+
+    let storage: DynStorage = match args.storage {
+        StorageKind::Local => Box::new(LocalStorage::new(args.data_dir)),
+        StorageKind::S3 => {
+            let bucket = args
+                .bucket
+                .expect("--bucket required for s3 storage mode");
+            Box::new(
+                S3Storage::new(&bucket)
+                    .await
+                    .expect("failed to create s3 storage"),
+            )
+        }
+    };
     let db = Arc::new(Database::new(storage));
 
     let app = Router::new().route("/query", post(handle_query)).with_state(db);

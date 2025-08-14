@@ -30,6 +30,30 @@ cargo test            # run unit tests
 cargo run             # start the HTTP query service on port 8080
 ```
 
+## Storage Backends
+
+The server supports both local filesystem storage and Amazon S3.
+
+### Local
+
+Local storage is the default. Specify a directory with `--data-dir`:
+
+```bash
+cargo run -- --data-dir ./data
+```
+
+### S3
+
+To use S3, set AWS credentials in the environment and provide the bucket
+name:
+
+```bash
+AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
+  cargo run -- --storage s3 --bucket my-bucket
+```
+
+`AWS_REGION` controls the region (default `us-east-1`).
+
 ## Example
 
 With the server running you can insert and query data over HTTP:
