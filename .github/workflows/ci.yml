@@ -17,9 +17,5 @@ jobs:
           toolchain: stable
           override: true
       - uses: Swatinem/rust-cache@v2
-      - name: Run unit tests
-        run: cargo test --lib
-      - name: Run e2e tests
-        run: cargo test --test e2e_local
-      - name: Run query endpoint test
-        run: cargo test --test query_http_test
+      - name: Run tests
+        run: cargo test
