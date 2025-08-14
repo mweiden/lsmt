@@ -11,6 +11,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "sync"] 
 thiserror = "1"
 base64 = "0.21"
 rust-s3 = { version = "0.36.0-beta.2", default-features = false, features = ["tokio-rustls-tls"] }
+axum = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
