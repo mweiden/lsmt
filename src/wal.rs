@@ -1,36 +1,86 @@
-use std::{fs::File, io::Write, path::PathBuf};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Basic write-ahead log used to persist recent writes before they are
-/// flushed to disk.
+use crate::storage::{Storage, StorageError};
+
+/// Basic write-ahead log persisted via the configured storage backend.
 pub struct Wal {
-    /// Path to the log file.
-    path: PathBuf,
-    /// File handle protected by a mutex for async access.
-    file: Mutex<File>,
+    path: String,
+    storage: Arc<dyn Storage>,
+    buf: Mutex<Vec<u8>>,
+}
+
+fn parse_entries(data: &[u8]) -> std::io::Result<Vec<(String, Vec<u8>)>> {
+    let mut res = Vec::new();
+    for line in data.split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(pos) = line.iter().position(|b| *b == b'\t') {
+            let key = std::str::from_utf8(&line[..pos])
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+                .to_string();
+            let val = STANDARD
+                .decode(&line[pos + 1..])
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            res.push((key, val));
+        }
+    }
+    Ok(res)
+}
+
+fn map_err(e: StorageError) -> std::io::Error {
+    match e {
+        StorageError::Io(e) => e,
+        StorageError::Unimplemented => {
+            std::io::Error::new(std::io::ErrorKind::Other, "unimplemented")
+        }
+    }
 }
 
 impl Wal {
-    /// Create a new log at `path`.
-    pub fn new(path: impl Into<PathBuf>) -> std::io::Result<Self> {
+    /// Create or open a log at `path`, returning the WAL instance and any
+    /// existing entries to be replayed into the memtable.
+    pub async fn new(
+        storage: Arc<dyn Storage>,
+        path: impl Into<String>,
+    ) -> std::io::Result<(Self, Vec<(String, Vec<u8>)>)> {
         let path = path.into();
-        let file = File::create(&path)?;
-        Ok(Self { path, file: Mutex::new(file) })
+        let data = storage.get(&path).await.unwrap_or_default();
+        let entries = parse_entries(&data)?;
+        Ok((
+            Self {
+                path,
+                storage,
+                buf: Mutex::new(data),
+            },
+            entries,
+        ))
     }
 
-    /// Append a line of `data` to the log and flush it to disk.
+    /// Append a line of `data` to the log and persist it through the storage
+    /// backend.
     pub async fn append(&self, data: &[u8]) -> std::io::Result<()> {
-        let mut file = self.file.lock().await;
-        file.write_all(data)?;
-        file.write_all(b"\n")?;
-        file.flush()?;
+        let mut buf = self.buf.lock().await;
+        buf.extend_from_slice(data);
+        buf.push(b'\n');
+        self.storage
+            .put(&self.path, buf.clone())
+            .await
+            .map_err(map_err)?;
         Ok(())
     }
-}
 
-/// Create `shards` independent WAL files using `base` as the prefix.
-pub fn shard_wal(base: &str, shards: usize) -> Vec<Wal> {
-    (0..shards)
-        .map(|i| Wal::new(format!("{base}_{i}.wal")).expect("create wal"))
-        .collect()
+    /// Remove all data from the log by truncating the underlying storage
+    /// object.
+    pub async fn clear(&self) -> std::io::Result<()> {
+        let mut buf = self.buf.lock().await;
+        buf.clear();
+        self.storage
+            .put(&self.path, Vec::new())
+            .await
+            .map_err(map_err)?;
+        Ok(())
+    }
 }

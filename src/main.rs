@@ -1,13 +1,13 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use axum::{extract::State, http::StatusCode, routing::post, Router};
+use axum::{Router, extract::State, http::StatusCode, routing::post};
 use clap::{Parser, ValueEnum};
 use lsmt::{
-    storage::{local::LocalStorage, s3::S3Storage, Storage},
     Database, SqlEngine,
+    storage::{Storage, local::LocalStorage, s3::S3Storage},
 };
 
-type DynStorage = Box<dyn Storage>;
+type DynStorage = Arc<dyn Storage>;
 
 #[derive(Parser)]
 struct Args {
@@ -26,16 +26,10 @@ enum StorageKind {
 }
 
 /// Handle incoming SQL queries sent to the server.
-async fn handle_query(
-    State(db): State<Arc<Database<DynStorage>>>,
-    body: String,
-) -> (StatusCode, String) {
+async fn handle_query(State(db): State<Arc<Database>>, body: String) -> (StatusCode, String) {
     let engine = SqlEngine::new();
     match engine.execute(&db, &body).await {
-        Ok(Some(bytes)) => (
-            StatusCode::OK,
-            String::from_utf8_lossy(&bytes).to_string(),
-        ),
+        Ok(Some(bytes)) => (StatusCode::OK, String::from_utf8_lossy(&bytes).to_string()),
         Ok(None) => (StatusCode::OK, String::new()),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
     }
@@ -47,21 +41,21 @@ async fn main() {
     let args = Args::parse();
 
     let storage: DynStorage = match args.storage {
-        StorageKind::Local => Box::new(LocalStorage::new(args.data_dir)),
+        StorageKind::Local => Arc::new(LocalStorage::new(&args.data_dir)),
         StorageKind::S3 => {
-            let bucket = args
-                .bucket
-                .expect("--bucket required for s3 storage mode");
-            Box::new(
+            let bucket = args.bucket.expect("--bucket required for s3 storage mode");
+            Arc::new(
                 S3Storage::new(&bucket)
                     .await
                     .expect("failed to create s3 storage"),
             )
         }
     };
-    let db = Arc::new(Database::new(storage));
+    let db = Arc::new(Database::new(storage, "wal.log").await);
 
-    let app = Router::new().route("/query", post(handle_query)).with_state(db);
+    let app = Router::new()
+        .route("/query", post(handle_query))
+        .with_state(db);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     println!("LSMT server listening on {addr}");

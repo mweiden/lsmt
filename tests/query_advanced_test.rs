@@ -1,11 +1,12 @@
-use lsmt::storage::local::LocalStorage;
+use lsmt::storage::{Storage, local::LocalStorage};
 use lsmt::{Database, SqlEngine};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn update_delete_and_count() {
     let tmp = tempfile::tempdir().unwrap();
-    let storage = LocalStorage::new(tmp.path());
-    let db = Database::new(storage);
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+    let db = Database::new(storage, "wal.log").await;
     let engine = SqlEngine::new();
 
     engine
@@ -60,14 +61,11 @@ async fn update_delete_and_count() {
 #[tokio::test]
 async fn table_names_group_by_and_cast() {
     let tmp = tempfile::tempdir().unwrap();
-    let storage = LocalStorage::new(tmp.path());
-    let db = Database::new(storage);
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+    let db = Database::new(storage, "wal.log").await;
     let engine = SqlEngine::new();
 
-    engine
-        .execute(&db, "CREATE TABLE foo.kv")
-        .await
-        .unwrap();
+    engine.execute(&db, "CREATE TABLE foo.kv").await.unwrap();
     engine
         .execute(&db, "INSERT INTO foo.kv VALUES ('a','001')")
         .await
@@ -88,11 +86,7 @@ async fn table_names_group_by_and_cast() {
         .unwrap();
     assert_eq!(String::from_utf8(res).unwrap(), "001");
 
-    let tables = engine
-        .execute(&db, "SHOW TABLES")
-        .await
-        .unwrap()
-        .unwrap();
+    let tables = engine.execute(&db, "SHOW TABLES").await.unwrap().unwrap();
     assert_eq!(String::from_utf8(tables).unwrap().trim(), "kv");
 
     let cast = engine

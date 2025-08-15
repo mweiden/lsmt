@@ -1,8 +1,8 @@
 use crate::bloom::BloomFilter;
 use crate::storage::{Storage, StorageError};
 use crate::zonemap::ZoneMap;
-use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 
 // field delimiters within on-disk table files
 const SEP: u8 = b'\t';
@@ -31,7 +31,7 @@ impl SsTable {
 
     /// Write a new table to disk from the provided `entries` and return
     /// the constructed [`SsTable`] metadata.
-    pub async fn create<S: Storage + Sync + Send>(
+    pub async fn create<S: Storage + Sync + Send + ?Sized>(
         path: impl Into<String>,
         entries: &[(String, Vec<u8>)],
         storage: &S,
@@ -52,12 +52,16 @@ impl SsTable {
             data.push(NL);
         }
         storage.put(&path, data).await?;
-        Ok(Self { path, bloom, zone_map })
+        Ok(Self {
+            path,
+            bloom,
+            zone_map,
+        })
     }
 
     /// Retrieve a value from the table, consulting bloom filter and zone
     /// map before scanning the file.
-    pub async fn get<S: Storage + Sync + Send>(
+    pub async fn get<S: Storage + Sync + Send + ?Sized>(
         &self,
         key: &str,
         storage: &S,

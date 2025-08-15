@@ -6,34 +6,46 @@ pub mod storage;
 pub mod wal;
 pub mod zonemap;
 
+use base64::Engine;
 pub use query::SqlEngine;
+use std::sync::Arc;
 
 /// Core database type combining an in-memory memtable with a persistent
 /// storage layer.
-pub struct Database<S: storage::Storage> {
-    storage: S,
+pub struct Database {
+    storage: Arc<dyn storage::Storage>,
     memtable: memtable::MemTable,
     sstables: tokio::sync::RwLock<Vec<sstable::SsTable>>,
     max_memtable_size: usize,
     next_id: std::sync::atomic::AtomicUsize,
+    wal: wal::Wal,
 }
 
-impl<S: storage::Storage> Database<S> {
+impl Database {
     /// Create a new database instance backed by the provided storage
     /// implementation.
-    pub fn new(storage: S) -> Self {
+    pub async fn new(storage: Arc<dyn storage::Storage>, wal_path: impl Into<String>) -> Self {
+        let wal_path = wal_path.into();
+        let (wal, entries) = wal::Wal::new(storage.clone(), wal_path)
+            .await
+            .expect("create wal");
+        let memtable = memtable::MemTable::new();
+        for (k, v) in entries {
+            memtable.insert(k, v).await;
+        }
         Self {
             storage,
-            memtable: memtable::MemTable::new(),
+            memtable,
             sstables: tokio::sync::RwLock::new(Vec::new()),
             // default threshold before automatically flushing to disk
             max_memtable_size: 1024,
             next_id: std::sync::atomic::AtomicUsize::new(0),
+            wal,
         }
     }
 
     /// Return a reference to the configured storage backend.
-    pub fn storage(&self) -> &S {
+    pub fn storage(&self) -> &Arc<dyn storage::Storage> {
         &self.storage
     }
 
@@ -44,6 +56,13 @@ impl<S: storage::Storage> Database<S> {
 
     /// Insert a key/value pair into the database.
     pub async fn insert(&self, key: String, value: Vec<u8>) {
+        // best effort to log the write ahead of applying it
+        let mut rec = key.clone().into_bytes();
+        rec.push(b'\t');
+        let enc = base64::engine::general_purpose::STANDARD.encode(&value);
+        rec.extend_from_slice(enc.as_bytes());
+        let _ = self.wal.append(&rec).await;
+
         self.memtable.insert(key, value).await;
         if self.memtable.len().await >= self.max_memtable_size {
             // best-effort flush; ignore errors for now
@@ -58,7 +77,7 @@ impl<S: storage::Storage> Database<S> {
         }
         let tables = self.sstables.read().await;
         for table in tables.iter().rev() {
-            if let Ok(Some(v)) = table.get(key, &self.storage).await {
+            if let Ok(Some(v)) = table.get(key, self.storage.as_ref()).await {
                 return Some(v);
             }
         }
@@ -125,9 +144,11 @@ impl<S: storage::Storage> Database<S> {
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let path = format!("sstable_{id}.tbl");
-        let table = sstable::SsTable::create(&path, &entries, &self.storage).await?;
+        let table = sstable::SsTable::create(&path, &entries, self.storage.as_ref()).await?;
         self.memtable.clear().await;
         self.sstables.write().await.push(table);
+        // reset WAL since its contents are now persisted in the SSTable
+        self.wal.clear().await.map_err(storage::StorageError::Io)?;
         Ok(())
     }
 }
