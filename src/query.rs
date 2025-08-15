@@ -4,14 +4,14 @@ use std::collections::BTreeMap;
 
 use sqlparser::ast::{
     Assignment, AssignmentTarget, BinaryOperator, DataType, Delete, Expr, FromTable, Function,
-    FunctionArg, FunctionArgExpr, FunctionArguments, Insert, LimitClause, ObjectName,
-    ObjectType, OrderBy, OrderByKind, Query, Select, SelectItem, SetExpr, Statement,
-    TableFactor, TableWithJoins, Value,
+    FunctionArg, FunctionArgExpr, FunctionArguments, Insert, LimitClause, ObjectName, ObjectType,
+    OrderBy, OrderByKind, Query, Select, SelectItem, SetExpr, Statement, TableFactor,
+    TableWithJoins, Value,
 };
 use sqlparser::dialect::GenericDialect;
 use sqlparser::parser::Parser;
 
-use crate::{storage::Storage, Database};
+use crate::Database;
 
 /// Errors that can occur when parsing or executing a query.
 #[derive(thiserror::Error, Debug)]
@@ -43,11 +43,7 @@ impl SqlEngine {
     }
 
     /// Execute `sql` against the provided [`Database`].
-    pub async fn execute<S: Storage + Sync + Send>(
-        &self,
-        db: &Database<S>,
-        sql: &str,
-    ) -> Result<Option<Vec<u8>>, QueryError> {
+    pub async fn execute(&self, db: &Database, sql: &str) -> Result<Option<Vec<u8>>, QueryError> {
         let stmts = self.parse(sql)?;
         let mut result = None;
         for stmt in stmts {
@@ -57,9 +53,9 @@ impl SqlEngine {
     }
 
     /// Execute a single parsed SQL [`Statement`].
-    async fn execute_stmt<S: Storage + Sync + Send>(
+    async fn execute_stmt(
         &self,
-        db: &Database<S>,
+        db: &Database,
         stmt: Statement,
     ) -> Result<Option<Vec<u8>>, QueryError> {
         match stmt {
@@ -106,11 +102,7 @@ impl SqlEngine {
     }
 
     /// Handle an `INSERT` statement inserting a single key/value pair.
-    async fn exec_insert<S: Storage + Sync + Send>(
-        &self,
-        db: &Database<S>,
-        insert: Insert,
-    ) -> Result<(), QueryError> {
+    async fn exec_insert(&self, db: &Database, insert: Insert) -> Result<(), QueryError> {
         // Extract the target namespace/table name.
         let ns = match &insert.table {
             sqlparser::ast::TableObject::TableName(name) => {
@@ -148,9 +140,9 @@ impl SqlEngine {
     }
 
     /// Handle an `UPDATE` statement that sets the value for a single key.
-    async fn exec_update<S: Storage + Sync + Send>(
+    async fn exec_update(
         &self,
-        db: &Database<S>,
+        db: &Database,
         table: TableWithJoins,
         assignments: Vec<Assignment>,
         selection: Option<Expr>,
@@ -204,11 +196,7 @@ impl SqlEngine {
     }
 
     /// Handle a `DELETE` statement for a single key.
-    async fn exec_delete<S: Storage + Sync + Send>(
-        &self,
-        db: &Database<S>,
-        delete: Delete,
-    ) -> Result<(), QueryError> {
+    async fn exec_delete(&self, db: &Database, delete: Delete) -> Result<(), QueryError> {
         let table = match &delete.from {
             FromTable::WithFromKeyword(t) | FromTable::WithoutKeyword(t) => t,
         };
@@ -235,9 +223,9 @@ impl SqlEngine {
     }
 
     /// Execute the inner query of a [`Statement::Query`].
-    async fn exec_query<S: Storage + Sync + Send>(
+    async fn exec_query(
         &self,
-        db: &Database<S>,
+        db: &Database,
         q: Box<Query>,
     ) -> Result<Option<Vec<u8>>, QueryError> {
         match *q.body {
@@ -250,9 +238,9 @@ impl SqlEngine {
     }
 
     /// Execute a `SELECT` statement returning at most one row/value.
-    async fn exec_select<S: Storage + Sync + Send>(
+    async fn exec_select(
         &self,
-        db: &Database<S>,
+        db: &Database,
         select: Select,
         order: Option<OrderBy>,
         limit: Option<LimitClause>,
@@ -306,9 +294,7 @@ impl SqlEngine {
         let item = &select.projection[0];
         let result = match item {
             SelectItem::Wildcard(_) => rows.first().map(|(_, v)| v.clone()),
-            SelectItem::UnnamedExpr(Expr::Function(func)) => {
-                Some(handle_function(func, &rows)?)
-            }
+            SelectItem::UnnamedExpr(Expr::Function(func)) => Some(handle_function(func, &rows)?),
             SelectItem::UnnamedExpr(expr) => {
                 let mut out: Vec<String> = rows
                     .iter()
@@ -348,14 +334,10 @@ impl SqlEngine {
         for (gk, grp_rows) in groups {
             let val = match item {
                 SelectItem::Wildcard(_) => gk.into_bytes(),
-                SelectItem::UnnamedExpr(Expr::Function(func)) => {
-                    handle_function(func, &grp_rows)?
-                }
-                SelectItem::UnnamedExpr(expr) => {
-                    eval_expr(expr, &grp_rows[0].0, &grp_rows[0].1)
-                        .unwrap_or_default()
-                        .into_bytes()
-                }
+                SelectItem::UnnamedExpr(Expr::Function(func)) => handle_function(func, &grp_rows)?,
+                SelectItem::UnnamedExpr(expr) => eval_expr(expr, &grp_rows[0].0, &grp_rows[0].1)
+                    .unwrap_or_default()
+                    .into_bytes(),
                 _ => return Err(QueryError::Unsupported),
             };
             out.push(val);
@@ -367,19 +349,20 @@ impl SqlEngine {
     }
 
     /// Return a newline-delimited list of registered table names.
-    async fn exec_show_tables<S: Storage + Sync + Send>(
-        &self,
-        db: &Database<S>,
-    ) -> Result<Option<Vec<u8>>, QueryError> {
-        let mut tables: Vec<String> =
-            db.scan_ns("_tables").await.into_iter().map(|(k, _)| k).collect();
+    async fn exec_show_tables(&self, db: &Database) -> Result<Option<Vec<u8>>, QueryError> {
+        let mut tables: Vec<String> = db
+            .scan_ns("_tables")
+            .await
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
         tables.sort();
         Ok(Some(tables.join("\n").into_bytes()))
     }
 }
 
 /// Register a table name in the internal catalog if it does not already exist.
-async fn register_table<S: Storage + Sync + Send>(db: &Database<S>, table: &str) {
+async fn register_table(db: &Database, table: &str) {
     if db.get_ns("_tables", table).await.is_none() {
         db.insert_ns("_tables", table.to_string(), Vec::new()).await;
     }
@@ -387,8 +370,7 @@ async fn register_table<S: Storage + Sync + Send>(db: &Database<S>, table: &str)
 
 /// Convert an AST [`ObjectName`] into a lowercase namespace string.
 fn object_name_to_ns(name: &ObjectName) -> Option<String> {
-    name
-        .0
+    name.0
         .last()
         .and_then(|p| p.as_ident())
         .map(|i| i.value.to_lowercase())
@@ -420,7 +402,9 @@ fn eval_expr(expr: &Expr, key: &str, val: &[u8]) -> Option<String> {
             Value::Number(n, _) => Some(n.clone()),
             _ => None,
         },
-        Expr::Cast { expr, data_type, .. } => {
+        Expr::Cast {
+            expr, data_type, ..
+        } => {
             let inner = eval_expr(expr, key, val)?;
             match data_type {
                 DataType::Int(_)
@@ -440,7 +424,8 @@ fn eval_expr(expr: &Expr, key: &str, val: &[u8]) -> Option<String> {
 fn eval_cond(expr: &Expr, key: &str, val: &[u8]) -> bool {
     match expr {
         Expr::BinaryOp { left, op, right } => {
-            if let (Some(lhs), Some(rhs)) = (eval_expr(left, key, val), eval_expr(right, key, val)) {
+            if let (Some(lhs), Some(rhs)) = (eval_expr(left, key, val), eval_expr(right, key, val))
+            {
                 match op {
                     BinaryOperator::Eq => lhs == rhs,
                     BinaryOperator::NotEq => lhs != rhs,
@@ -482,8 +467,10 @@ fn handle_function(func: &Function, rows: &[(String, Vec<u8>)]) -> Result<Vec<u8
         "count" => Ok(rows.len().to_string().into_bytes()),
         "min" | "max" => {
             let expr = extract_func_expr(func)?;
-            let mut vals: Vec<String> =
-                rows.iter().filter_map(|(k, v)| eval_expr(expr, k, v)).collect();
+            let mut vals: Vec<String> = rows
+                .iter()
+                .filter_map(|(k, v)| eval_expr(expr, k, v))
+                .collect();
             vals.sort();
             if name == "min" {
                 Ok(vals.first().unwrap_or(&"".to_string()).clone().into_bytes())
@@ -519,8 +506,14 @@ fn extract_func_expr(func: &Function) -> Result<&Expr, QueryError> {
 /// Extract a numeric limit value from a [`LimitClause`].
 fn extract_limit(lc: &LimitClause) -> Option<usize> {
     match lc {
-        LimitClause::LimitOffset { limit: Some(Expr::Value(v)), .. } |
-        LimitClause::OffsetCommaLimit { limit: Expr::Value(v), .. } => {
+        LimitClause::LimitOffset {
+            limit: Some(Expr::Value(v)),
+            ..
+        }
+        | LimitClause::OffsetCommaLimit {
+            limit: Expr::Value(v),
+            ..
+        } => {
             if let Value::Number(n, _) = &v.value {
                 n.parse::<usize>().ok()
             } else {
@@ -548,4 +541,3 @@ fn apply_limit_vec<T>(v: &mut Vec<T>, lc: &LimitClause) {
         }
     }
 }
-

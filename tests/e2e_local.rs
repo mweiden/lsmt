@@ -1,10 +1,14 @@
-use lsmt::{storage::local::LocalStorage, Database, SqlEngine};
+use lsmt::{
+    Database, SqlEngine,
+    storage::{Storage, local::LocalStorage},
+};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn e2e_insert_select() {
     let dir = tempfile::tempdir().unwrap();
-    let storage = LocalStorage::new(dir.path());
-    let db = Database::new(storage);
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(dir.path()));
+    let db = Database::new(storage, "wal.log").await;
     let engine = SqlEngine::new();
     engine
         .execute(&db, "INSERT INTO kv VALUES ('foo','bar')")

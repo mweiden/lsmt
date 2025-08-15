@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use std::sync::Arc;
 
 #[async_trait]
 pub trait Storage: Send + Sync {
@@ -8,6 +9,17 @@ pub trait Storage: Send + Sync {
 
 #[async_trait]
 impl Storage for Box<dyn Storage> {
+    async fn put(&self, path: &str, data: Vec<u8>) -> Result<(), StorageError> {
+        (**self).put(path, data).await
+    }
+
+    async fn get(&self, path: &str) -> Result<Vec<u8>, StorageError> {
+        (**self).get(path).await
+    }
+}
+
+#[async_trait]
+impl Storage for Arc<dyn Storage> {
     async fn put(&self, path: &str, data: Vec<u8>) -> Result<(), StorageError> {
         (**self).put(path, data).await
     }
