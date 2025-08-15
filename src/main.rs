@@ -1,10 +1,10 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use axum::{extract::State, http::StatusCode, routing::post, Router};
+use axum::{Router, extract::State, http::StatusCode, routing::post};
 use clap::{Parser, ValueEnum};
 use lsmt::{
-    storage::{local::LocalStorage, s3::S3Storage, Storage},
     Database, SqlEngine,
+    storage::{Storage, local::LocalStorage, s3::S3Storage},
 };
 
 type DynStorage = Box<dyn Storage>;
@@ -32,10 +32,7 @@ async fn handle_query(
 ) -> (StatusCode, String) {
     let engine = SqlEngine::new();
     match engine.execute(&db, &body).await {
-        Ok(Some(bytes)) => (
-            StatusCode::OK,
-            String::from_utf8_lossy(&bytes).to_string(),
-        ),
+        Ok(Some(bytes)) => (StatusCode::OK, String::from_utf8_lossy(&bytes).to_string()),
         Ok(None) => (StatusCode::OK, String::new()),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
     }
@@ -47,11 +44,9 @@ async fn main() {
     let args = Args::parse();
 
     let storage: DynStorage = match args.storage {
-        StorageKind::Local => Box::new(LocalStorage::new(args.data_dir)),
+        StorageKind::Local => Box::new(LocalStorage::new(&args.data_dir)),
         StorageKind::S3 => {
-            let bucket = args
-                .bucket
-                .expect("--bucket required for s3 storage mode");
+            let bucket = args.bucket.expect("--bucket required for s3 storage mode");
             Box::new(
                 S3Storage::new(&bucket)
                     .await
@@ -59,9 +54,15 @@ async fn main() {
             )
         }
     };
-    let db = Arc::new(Database::new(storage));
+    let wal_path = std::path::Path::new(&args.data_dir).join("wal.log");
+    if let Some(parent) = wal_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let db = Arc::new(Database::new(storage, wal_path).await);
 
-    let app = Router::new().route("/query", post(handle_query)).with_state(db);
+    let app = Router::new()
+        .route("/query", post(handle_query))
+        .with_state(db);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
     println!("LSMT server listening on {addr}");

@@ -1,10 +1,11 @@
-use lsmt::{storage::local::LocalStorage, Database, SqlEngine};
+use lsmt::{Database, SqlEngine, storage::local::LocalStorage};
 
 #[tokio::test]
 async fn e2e_insert_select() {
     let dir = tempfile::tempdir().unwrap();
     let storage = LocalStorage::new(dir.path());
-    let db = Database::new(storage);
+    let wal = dir.path().join("wal.log");
+    let db = Database::new(storage, wal).await;
     let engine = SqlEngine::new();
     engine
         .execute(&db, "INSERT INTO kv VALUES ('foo','bar')")
