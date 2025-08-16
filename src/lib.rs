@@ -1,6 +1,7 @@
 pub mod bloom;
 pub mod memtable;
 pub mod query;
+pub mod schema;
 pub mod sstable;
 pub mod storage;
 pub mod wal;
