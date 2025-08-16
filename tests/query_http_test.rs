@@ -30,9 +30,17 @@ async fn http_query_roundtrip() {
         thread::sleep(Duration::from_millis(50));
     }
 
+    let create = client
+        .post(format!("{}/query", base))
+        .body("CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))")
+        .send()
+        .await
+        .unwrap();
+    assert!(create.status().is_success());
+
     let insert = client
         .post(format!("{}/query", base))
-        .body("INSERT INTO kv VALUES ('foo','bar')")
+        .body("INSERT INTO kv (id, val) VALUES ('foo','bar')")
         .send()
         .await
         .unwrap();
@@ -40,7 +48,7 @@ async fn http_query_roundtrip() {
 
     let res = client
         .post(format!("{}/query", base))
-        .body("SELECT value FROM kv WHERE key = 'foo'")
+        .body("SELECT val FROM kv WHERE id = 'foo'")
         .send()
         .await
         .unwrap()
@@ -48,6 +56,17 @@ async fn http_query_roundtrip() {
         .await
         .unwrap();
     assert_eq!(res, "bar");
+
+    let count = client
+        .post(format!("{}/query", base))
+        .body("SELECT COUNT(*) FROM kv WHERE id = 'foo'")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(count, "1");
 
     child.kill().unwrap();
 }

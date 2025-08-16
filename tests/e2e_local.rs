@@ -11,11 +11,15 @@ async fn e2e_insert_select() {
     let db = Database::new(storage, "wal.log").await;
     let engine = SqlEngine::new();
     engine
-        .execute(&db, "INSERT INTO kv VALUES ('foo','bar')")
+        .execute(&db, "CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))")
+        .await
+        .unwrap();
+    engine
+        .execute(&db, "INSERT INTO kv (id, val) VALUES ('foo','bar')")
         .await
         .unwrap();
     let res = engine
-        .execute(&db, "SELECT * FROM kv WHERE key='foo'")
+        .execute(&db, "SELECT val FROM kv WHERE id='foo'")
         .await
         .unwrap();
     assert_eq!(res, Some(b"bar".to_vec()));
