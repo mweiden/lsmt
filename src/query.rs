@@ -80,6 +80,9 @@ impl SqlEngine {
             }
             Statement::CreateTable(ct) => {
                 let ns = object_name_to_ns(&ct.name).ok_or(QueryError::Unsupported)?;
+                if db.get_ns("_tables", &ns).await.is_some() {
+                    return Err(QueryError::Unsupported);
+                }
                 let schema = schema_from_create(&ct).ok_or(QueryError::Unsupported)?;
                 save_schema(db, &ns, &schema).await;
                 register_table(db, &ns).await;
@@ -113,7 +116,6 @@ impl SqlEngine {
             }
             _ => return Err(QueryError::Unsupported),
         };
-        register_table(db, &ns).await;
         let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
         let source = insert.source.ok_or(QueryError::Unsupported)?;
         let values = match *source.body {
@@ -162,7 +164,6 @@ impl SqlEngine {
         selection: Option<Expr>,
     ) -> Result<(), QueryError> {
         let ns = table_factor_to_ns(&table.relation).ok_or(QueryError::Unsupported)?;
-        register_table(db, &ns).await;
         let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
         // schema-aware path
         let cond = selection.ok_or(QueryError::Unsupported)?;
@@ -209,7 +210,6 @@ impl SqlEngine {
             return Err(QueryError::Unsupported);
         }
         let ns = table_factor_to_ns(&table[0].relation).ok_or(QueryError::Unsupported)?;
-        register_table(db, &ns).await;
         let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
         // schema-aware deletion using key columns
         let expr = delete.selection.ok_or(QueryError::Unsupported)?;
@@ -255,7 +255,6 @@ impl SqlEngine {
             return Err(QueryError::Unsupported);
         }
         let ns = table_factor_to_ns(&select.from[0].relation).ok_or(QueryError::Unsupported)?;
-        register_table(db, &ns).await;
         let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
 
         // handle COUNT(*) with optional WHERE filtering
@@ -413,7 +412,6 @@ async fn register_table(db: &Database, table: &str) {
     if db.get_ns("_tables", table).await.is_none() {
         db.insert_ns("_tables", table.to_string(), Vec::new()).await;
     }
-    ensure_default_schema(db, table).await;
 }
 
 /// Retrieve the schema for a table if it exists.
@@ -427,18 +425,6 @@ async fn get_schema(db: &Database, table: &str) -> Option<TableSchema> {
 async fn save_schema(db: &Database, table: &str, schema: &TableSchema) {
     let data = serde_json::to_vec(schema).unwrap_or_default();
     db.insert_ns("_schemas", table.to_string(), data).await;
-}
-
-/// Ensure a default key/value schema exists for a table.
-async fn ensure_default_schema(db: &Database, table: &str) {
-    if get_schema(db, table).await.is_none() {
-        let schema = TableSchema::new(
-            vec!["key".to_string()],
-            Vec::new(),
-            vec!["key".to_string(), "value".to_string()],
-        );
-        save_schema(db, table, &schema).await;
-    }
 }
 
 /// Build a [`TableSchema`] from a parsed `CREATE TABLE` statement.

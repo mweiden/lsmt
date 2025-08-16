@@ -32,3 +32,27 @@ async fn create_insert_select_schema_table() {
         .unwrap();
     assert_eq!(String::from_utf8(res).unwrap(), "hello");
 }
+
+#[tokio::test]
+async fn create_existing_table_fails() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+    let db = Database::new(storage, "wal.log").await;
+    let engine = SqlEngine::new();
+
+    engine
+        .execute(
+            &db,
+            "CREATE TABLE users (id TEXT, val TEXT, PRIMARY KEY(id))",
+        )
+        .await
+        .unwrap();
+
+    let res = engine
+        .execute(
+            &db,
+            "CREATE TABLE users (id TEXT, val TEXT, PRIMARY KEY(id))",
+        )
+        .await;
+    assert!(res.is_err());
+}
