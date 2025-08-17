@@ -66,4 +66,24 @@ curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
 curl -X POST localhost:8080/query -d "SELECT value FROM kv WHERE key = 'hello'"
 ```
 
+## Docker Compose Cluster
+
+The provided `docker-compose.yml` starts a three-node cluster using local
+storage with a replication factor of two.
+
+Start the cluster:
+
+```bash
+docker compose up -d
+```
+
+Insert via one node and query from the others:
+
+```bash
+curl -X POST localhost:8080/query -d "CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))"
+curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
+curl -X POST localhost:8081/query -d "SELECT value FROM kv WHERE key = 'hello'"
+curl -X POST localhost:8082/query -d "SELECT value FROM kv WHERE key = 'hello'"
+```
+
 The project is a scaffold and many components are left for future work.
