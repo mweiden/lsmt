@@ -7,7 +7,7 @@ use std::sync::Arc;
 async fn update_delete_and_count() {
     let tmp = tempfile::tempdir().unwrap();
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
-    let db = Database::new(storage, "wal.log").await;
+    let db = Database::new(storage, "wal.log").await.unwrap();
     let engine = SqlEngine::new();
 
     engine
@@ -79,7 +79,7 @@ async fn update_delete_and_count() {
 async fn table_names_and_cast() {
     let tmp = tempfile::tempdir().unwrap();
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
-    let db = Database::new(storage, "wal.log").await;
+    let db = Database::new(storage, "wal.log").await.unwrap();
     let engine = SqlEngine::new();
 
     engine
@@ -108,7 +108,7 @@ async fn table_names_and_cast() {
 async fn multi_row_insert_count() {
     let tmp = tempfile::tempdir().unwrap();
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
-    let db = Database::new(storage, "wal.log").await;
+    let db = Database::new(storage, "wal.log").await.unwrap();
     let engine = SqlEngine::new();
 
     engine

@@ -60,21 +60,22 @@ async fn handle_internal(State(state): State<AppState>, body: String) -> (Status
 
 /// Start an HTTP server exposing the database at `/query`.
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     let storage: DynStorage = match args.storage {
         StorageKind::Local => Arc::new(LocalStorage::new(&args.data_dir)),
         StorageKind::S3 => {
-            let bucket = args.bucket.expect("--bucket required for s3 storage mode");
-            Arc::new(
-                S3Storage::new(&bucket)
-                    .await
-                    .expect("failed to create s3 storage"),
-            )
+            let bucket = args.bucket.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "--bucket required for s3 storage mode",
+                )
+            })?;
+            Arc::new(S3Storage::new(&bucket).await?)
         }
     };
-    let db = Arc::new(Database::new(storage, "wal.log").await);
+    let db = Arc::new(Database::new(storage, "wal.log").await?);
     let cluster = Arc::new(Cluster::new(
         db.clone(),
         args.node_addr.clone(),
@@ -89,10 +90,11 @@ async fn main() {
         .route("/internal", post(handle_internal))
         .with_state(state);
 
-    let url = Url::parse(&args.node_addr).expect("invalid --node-addr");
+    let url = Url::parse(&args.node_addr)?;
     let port = url.port().unwrap_or(80);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("Cass server listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
 }

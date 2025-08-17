@@ -7,7 +7,7 @@ use std::sync::Arc;
 async fn create_insert_select_schema_table() {
     let tmp = tempfile::tempdir().unwrap();
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
-    let db = Database::new(storage, "wal.log").await;
+    let db = Database::new(storage, "wal.log").await.unwrap();
     let engine = SqlEngine::new();
 
     engine
@@ -39,7 +39,7 @@ async fn create_insert_select_schema_table() {
 async fn create_existing_table_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
-    let db = Database::new(storage, "wal.log").await;
+    let db = Database::new(storage, "wal.log").await.unwrap();
     let engine = SqlEngine::new();
 
     engine
