@@ -4,11 +4,15 @@ Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apach
 
 ## Features
 
-- REST API for querying
-- Async storage abstraction with local or S3 backends
-- Sharded write-ahead logs and in-memory tables for parallel ingestion
+- REST API with basic SQL syntax
+- Stores data in a [log-structured merge tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree)
 - Column-oriented SSTable placeholders with bloom filters and zone maps
+- Async storage abstraction with local or S3 backends
+- Sharded write-ahead logs for durability and in-memory tables for parallel ingestion
 - Dockerfile and docker-compose for containerized deployment
+- Horizontal scalability
+- Configurable replication on a gossip protocol
+- Consistency: last-write-wins conflict resolution
 
 ## Query Syntax
 
