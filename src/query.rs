@@ -389,71 +389,123 @@ impl SqlEngine {
         if select.projection.len() != 1 {
             return Err(QueryError::Unsupported);
         }
-        // Extract key columns from WHERE clause.
-        let cond_map = if let Some(expr) = select.selection {
-            where_to_map(&expr)
+        // Extract key columns from WHERE clause, supporting `IN` lists.
+        let cond_multi = if let Some(expr) = select.selection.clone() {
+            where_to_multi_map(&expr)
         } else {
             BTreeMap::new()
         };
         let key_cols = schema.key_columns();
-        let mut key_parts: Vec<String> = Vec::new();
-        for col in key_cols {
-            if let Some(v) = cond_map.get(&col) {
-                key_parts.push(v.clone());
-            } else {
-                return Err(QueryError::Unsupported);
-            }
-        }
-        let key = key_parts.join("|");
-        let row_bytes = match db.get_ns(ns, &key).await {
-            Some(b) => b,
-            None => return Ok(None),
-        };
-        let (ts, data) = split_ts(&row_bytes);
-        if data.is_empty() {
-            if meta {
-                return Ok(Some(format!("{key}\t{ts}\t").into_bytes()));
-            } else {
-                return Ok(None);
-            }
-        }
-        let mut row_map = decode_row(data);
-        // include key columns
-        for (col, val) in cond_map {
-            row_map.insert(col, val);
+        let keys = build_keys(&key_cols, &cond_multi);
+        if keys.is_empty() {
+            return Err(QueryError::Unsupported);
         }
 
         let item = &select.projection[0];
-        let result = match item {
-            SelectItem::UnnamedExpr(Expr::Identifier(id)) => row_map
-                .get(&id.value.to_lowercase())
-                .cloned()
-                .map(|s| s.into_bytes()),
-            SelectItem::UnnamedExpr(Expr::Cast {
-                expr, data_type, ..
-            }) => {
-                if let Expr::Identifier(id) = &**expr {
-                    if let Some(val) = row_map.get(&id.value.to_lowercase()) {
-                        cast_simple(val, data_type).map(|s| s.into_bytes())
+        if keys.len() == 1 {
+            let key = &keys[0];
+            let row_bytes = match db.get_ns(ns, key).await {
+                Some(b) => b,
+                None => return Ok(None),
+            };
+            let (ts, data) = split_ts(&row_bytes);
+            if data.is_empty() {
+                if meta {
+                    return Ok(Some(format!("{key}\t{ts}\t").into_bytes()));
+                } else {
+                    return Ok(None);
+                }
+            }
+            let mut row_map = decode_row(data);
+            for (col, part) in key_cols.iter().zip(key.split('|')) {
+                row_map.insert(col.clone(), part.to_string());
+            }
+            let result = match item {
+                SelectItem::UnnamedExpr(Expr::Identifier(id)) => row_map
+                    .get(&id.value.to_lowercase())
+                    .cloned()
+                    .map(|s| s.into_bytes()),
+                SelectItem::UnnamedExpr(Expr::Cast {
+                    expr, data_type, ..
+                }) => {
+                    if let Expr::Identifier(id) = &**expr {
+                        if let Some(val) = row_map.get(&id.value.to_lowercase()) {
+                            cast_simple(val, data_type).map(|s| s.into_bytes())
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
-                } else {
-                    None
                 }
-            }
-            SelectItem::Wildcard(_) => Some(encode_row(&row_map)),
-            _ => return Err(QueryError::Unsupported),
-        };
-        if meta {
-            if let Some(bytes) = result {
-                let val = String::from_utf8_lossy(&bytes);
-                Ok(Some(format!("{key}\t{ts}\t{}", val).into_bytes()))
+                SelectItem::Wildcard(_) => Some(encode_row(&row_map)),
+                _ => return Err(QueryError::Unsupported),
+            };
+            if meta {
+                if let Some(bytes) = result {
+                    let val = String::from_utf8_lossy(&bytes);
+                    Ok(Some(format!("{key}\t{ts}\t{}", val).into_bytes()))
+                } else {
+                    Ok(Some(format!("{key}\t{ts}\t").into_bytes()))
+                }
             } else {
-                Ok(Some(format!("{key}\t{ts}\t").into_bytes()))
+                Ok(result)
             }
         } else {
-            Ok(result)
+            let mut lines = Vec::new();
+            for key in keys {
+                if let Some(row_bytes) = db.get_ns(ns, &key).await {
+                    let (ts, data) = split_ts(&row_bytes);
+                    if data.is_empty() {
+                        if meta {
+                            lines.push(format!("{key}\t{ts}\t"));
+                        }
+                        continue;
+                    }
+                    let mut row_map = decode_row(data);
+                    for (col, part) in key_cols.iter().zip(key.split('|')) {
+                        row_map.insert(col.clone(), part.to_string());
+                    }
+                    let result = match item {
+                        SelectItem::UnnamedExpr(Expr::Identifier(id)) => row_map
+                            .get(&id.value.to_lowercase())
+                            .cloned()
+                            .map(|s| s.into_bytes()),
+                        SelectItem::UnnamedExpr(Expr::Cast {
+                            expr, data_type, ..
+                        }) => {
+                            if let Expr::Identifier(id) = &**expr {
+                                if let Some(val) = row_map.get(&id.value.to_lowercase()) {
+                                    cast_simple(val, data_type).map(|s| s.into_bytes())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        SelectItem::Wildcard(_) => Some(encode_row(&row_map)),
+                        _ => return Err(QueryError::Unsupported),
+                    };
+                    if meta {
+                        if let Some(bytes) = result {
+                            let val = String::from_utf8_lossy(&bytes);
+                            lines.push(format!("{key}\t{ts}\t{}", val));
+                        } else {
+                            lines.push(format!("{key}\t{ts}\t"));
+                        }
+                    } else if let Some(bytes) = result {
+                        lines.push(String::from_utf8_lossy(&bytes).into_owned());
+                    }
+                }
+            }
+            if lines.is_empty() {
+                Ok(None)
+            } else if meta {
+                Ok(Some(lines.join("\n").into_bytes()))
+            } else {
+                Ok(Some(lines.join("\n").into_bytes()))
+            }
         }
     }
 

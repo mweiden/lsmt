@@ -115,6 +115,17 @@ async fn union_and_lww_across_replicas() {
         .unwrap();
     assert_eq!(res_b, "vb");
 
+    let res_c = client
+        .post(format!("{}/query", base1))
+        .body("SELECT val FROM kv WHERE id IN ('a', 'b')")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(res_c, "va2\nvb");
+
     child1.kill().unwrap();
     child2.kill().unwrap();
 }
