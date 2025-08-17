@@ -190,23 +190,7 @@ impl SqlEngine {
 
         let mut count = 0;
         for row in values.rows {
-            if cols.len() != row.len() {
-                return Err(QueryError::Unsupported);
-            }
-
-            // Build key and value map for schema tables.
-            let mut key_parts: Vec<String> = Vec::new();
-            let mut data_map: BTreeMap<String, String> = BTreeMap::new();
-            for (col, expr) in cols.iter().zip(row.iter()) {
-                let val = expr_to_string(expr).ok_or(QueryError::Unsupported)?;
-                if schema.partition_keys.contains(col) || schema.clustering_keys.contains(col) {
-                    key_parts.push(val.clone());
-                } else {
-                    data_map.insert(col.clone(), val);
-                }
-            }
-            let key = key_parts.join("|");
-            let data = encode_row(&data_map);
+            let (key, data) = build_row(&schema, &cols, &row).ok_or(QueryError::Unsupported)?;
             db.insert_ns_ts(&ns, key, data, ts).await;
             count += 1;
         }
@@ -227,16 +211,7 @@ impl SqlEngine {
         // schema-aware path
         let cond = selection.ok_or(QueryError::Unsupported)?;
         let cond_map = where_to_map(&cond);
-        let key_cols = schema.key_columns();
-        let mut key_parts = Vec::new();
-        for col in key_cols {
-            if let Some(v) = cond_map.get(&col) {
-                key_parts.push(v.clone());
-            } else {
-                return Err(QueryError::Unsupported);
-            }
-        }
-        let key = key_parts.join("|");
+        let key = build_single_key(&schema, &cond_map).ok_or(QueryError::Unsupported)?;
         let mut row_map = if let Some(bytes) = db.get_ns(&ns, &key).await {
             let (_, data) = split_ts(&bytes);
             decode_row(data)
@@ -279,16 +254,7 @@ impl SqlEngine {
         // schema-aware deletion using key columns
         let expr = delete.selection.ok_or(QueryError::Unsupported)?;
         let cond_map = where_to_map(&expr);
-        let key_cols = schema.key_columns();
-        let mut key_parts = Vec::new();
-        for col in key_cols {
-            if let Some(v) = cond_map.get(&col) {
-                key_parts.push(v.clone());
-            } else {
-                return Err(QueryError::Unsupported);
-            }
-        }
-        let key = key_parts.join("|");
+        let key = build_single_key(&schema, &cond_map).ok_or(QueryError::Unsupported)?;
         // record tombstone with timestamp
         db.insert_ns_ts(&ns, key, Vec::new(), ts).await;
         Ok(1)
@@ -352,26 +318,15 @@ impl SqlEngine {
         } else {
             BTreeMap::new()
         };
-        let key_cols = schema.key_columns();
         let mut count = 0;
-        if key_cols.iter().all(|c| cond_map.contains_key(c)) {
-            let key_parts: Vec<String> = key_cols
-                .iter()
-                .map(|c| {
-                    cond_map
-                        .get(c)
-                        .cloned()
-                        .ok_or_else(|| QueryError::Other("missing key".to_string()))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let key = key_parts.join("|");
+        if let Some(key) = build_single_key(schema, &cond_map) {
             if let Some(bytes) = db.get_ns(ns, &key).await {
                 let (_, data) = split_ts(&bytes);
                 if !data.is_empty() {
                     let mut row_map = decode_row(data);
-                    for col in &key_cols {
-                        if let Some(v) = cond_map.get(col) {
-                            row_map.insert(col.clone(), v.clone());
+                    for col in schema.key_columns() {
+                        if let Some(v) = cond_map.get(&col) {
+                            row_map.insert(col, v.clone());
                         }
                     }
                     if cond_map
@@ -390,7 +345,7 @@ impl SqlEngine {
                     continue;
                 }
                 let mut row_map = decode_row(data);
-                for (col, part) in key_cols.iter().zip(k.split('|')) {
+                for (col, part) in schema.key_columns().iter().zip(k.split('|')) {
                     row_map.insert(col.clone(), part.to_string());
                 }
                 if cond_map
@@ -415,31 +370,14 @@ impl SqlEngine {
         select: Select,
         meta: bool,
     ) -> Result<Option<Vec<u8>>, QueryError> {
-        let mut cols: Vec<(String, Option<DataType>)> = Vec::new();
-        let mut wildcard = false;
-        for item in select.projection.clone() {
-            match item {
-                SelectItem::Wildcard(_) => {
-                    wildcard = true;
-                    break;
-                }
-                SelectItem::UnnamedExpr(Expr::Identifier(id)) => {
-                    cols.push((id.value.to_lowercase(), None));
-                }
-                SelectItem::UnnamedExpr(Expr::Cast {
-                    expr, data_type, ..
-                }) => {
-                    if let Expr::Identifier(id) = *expr {
-                        cols.push((id.value.to_lowercase(), Some(data_type)));
-                    } else {
-                        return Err(QueryError::Unsupported);
-                    }
-                }
-                _ => return Err(QueryError::Unsupported),
-            }
-        }
+        let Select {
+            projection,
+            selection,
+            ..
+        } = select;
+        let (cols, wildcard) = parse_projection(projection)?;
 
-        let cond_multi = if let Some(expr) = select.selection.clone() {
+        let cond_multi = if let Some(expr) = selection {
             where_to_multi_map(&expr)
         } else {
             BTreeMap::new()
@@ -465,22 +403,7 @@ impl SqlEngine {
                 for (col, part) in key_cols.iter().zip(key.split('|')) {
                     row_map.insert(col.clone(), part.to_string());
                 }
-                let mut sel_map = BTreeMap::new();
-                if wildcard {
-                    sel_map = row_map.clone();
-                } else {
-                    for (col, cast) in &cols {
-                        if let Some(val) = row_map.get(col) {
-                            let mut v = val.clone();
-                            if let Some(dt) = cast {
-                                if let Some(cv) = cast_simple(val, dt) {
-                                    v = cv;
-                                }
-                            }
-                            sel_map.insert(col.clone(), v);
-                        }
-                    }
-                }
+                let sel_map = project_row(&row_map, &cols, wildcard);
                 if meta {
                     let val = String::from_utf8_lossy(&encode_row(&sel_map)).into_owned();
                     meta_lines.push(format!("{key}\t{ts}\t{val}"));
@@ -554,18 +477,8 @@ impl SqlEngine {
                         schema.columns.clone()
                     };
                     for row in values.rows {
-                        if cols.len() != row.len() {
-                            continue;
-                        }
-                        let mut parts = Vec::new();
-                        for (col, expr) in cols.iter().zip(row.iter()) {
-                            if schema.partition_keys.contains(col) {
-                                let val = expr_to_string(expr).ok_or(QueryError::Unsupported)?;
-                                parts.push(val);
-                            }
-                        }
-                        if !parts.is_empty() {
-                            keys.push(parts.join("|"));
+                        if let Some(key) = extract_partition_key(&schema, &cols, &row) {
+                            keys.push(key);
                         }
                     }
                 }
@@ -694,6 +607,60 @@ fn expr_to_string(expr: &Expr) -> Option<String> {
     }
 }
 
+/// Parse the projection list of a `SELECT` into column names and optional casts.
+fn parse_projection(
+    projection: Vec<SelectItem>,
+) -> Result<(Vec<(String, Option<DataType>)>, bool), QueryError> {
+    let mut cols = Vec::new();
+    let mut wildcard = false;
+    for item in projection {
+        match item {
+            SelectItem::Wildcard(_) => {
+                wildcard = true;
+                break;
+            }
+            SelectItem::UnnamedExpr(Expr::Identifier(id)) => {
+                cols.push((id.value.to_lowercase(), None));
+            }
+            SelectItem::UnnamedExpr(Expr::Cast {
+                expr, data_type, ..
+            }) => {
+                if let Expr::Identifier(id) = *expr {
+                    cols.push((id.value.to_lowercase(), Some(data_type)));
+                } else {
+                    return Err(QueryError::Unsupported);
+                }
+            }
+            _ => return Err(QueryError::Unsupported),
+        }
+    }
+    Ok((cols, wildcard))
+}
+
+/// Project a row map down to the requested columns, applying simple casts.
+fn project_row(
+    row_map: &BTreeMap<String, String>,
+    cols: &[(String, Option<DataType>)],
+    wildcard: bool,
+) -> BTreeMap<String, String> {
+    if wildcard {
+        return row_map.clone();
+    }
+    let mut sel_map = BTreeMap::new();
+    for (col, cast) in cols {
+        if let Some(val) = row_map.get(col) {
+            let mut v = val.clone();
+            if let Some(dt) = cast {
+                if let Some(cv) = cast_simple(val, dt) {
+                    v = cv;
+                }
+            }
+            sel_map.insert(col.clone(), v);
+        }
+    }
+    sel_map
+}
+
 /// Convert a WHERE clause into a map of column -> possible values, supporting `IN` lists.
 fn where_to_multi_map(expr: &Expr) -> BTreeMap<String, Vec<String>> {
     fn collect(e: &Expr, out: &mut BTreeMap<String, Vec<String>>) {
@@ -726,6 +693,43 @@ fn where_to_multi_map(expr: &Expr) -> BTreeMap<String, Vec<String>> {
     map
 }
 
+/// Extract the partition key from an insert row.
+fn extract_partition_key(schema: &TableSchema, cols: &[String], row: &[Expr]) -> Option<String> {
+    if cols.len() != row.len() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for (col, expr) in cols.iter().zip(row.iter()) {
+        if schema.partition_keys.contains(col) {
+            let val = expr_to_string(expr)?;
+            parts.push(val);
+        }
+    }
+    if parts.len() == schema.partition_keys.len() {
+        Some(parts.join("|"))
+    } else {
+        None
+    }
+}
+
+/// Build the full key and encoded row data from an insert row.
+fn build_row(schema: &TableSchema, cols: &[String], row: &[Expr]) -> Option<(String, Vec<u8>)> {
+    if cols.len() != row.len() {
+        return None;
+    }
+    let mut key_parts = Vec::new();
+    let mut data_map = BTreeMap::new();
+    for (col, expr) in cols.iter().zip(row.iter()) {
+        let val = expr_to_string(expr)?;
+        if schema.partition_keys.contains(col) || schema.clustering_keys.contains(col) {
+            key_parts.push(val.clone());
+        } else {
+            data_map.insert(col.clone(), val);
+        }
+    }
+    Some((key_parts.join("|"), encode_row(&data_map)))
+}
+
 /// Build partition key strings from column values, generating all combinations.
 fn build_keys(pk_cols: &[String], map: &BTreeMap<String, Vec<String>>) -> Vec<String> {
     if pk_cols.is_empty() {
@@ -753,6 +757,20 @@ fn build_keys(pk_cols: &[String], map: &BTreeMap<String, Vec<String>>) -> Vec<St
     let mut out = Vec::new();
     expand(0, &lists, &mut Vec::new(), &mut out);
     out
+}
+
+/// Build a single partition key from a map of column -> value.
+/// Returns `None` if any key column is missing.
+fn build_single_key(schema: &TableSchema, map: &BTreeMap<String, String>) -> Option<String> {
+    let mut parts = Vec::new();
+    for col in schema.key_columns() {
+        if let Some(v) = map.get(&col) {
+            parts.push(v.clone());
+        } else {
+            return None;
+        }
+    }
+    Some(parts.join("|"))
 }
 
 /// Convert a simple WHERE clause into a map of column -> value.
