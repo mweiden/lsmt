@@ -1,4 +1,4 @@
-use lsmt::bloom::BloomFilter;
+use cass::bloom::BloomFilter;
 
 #[test]
 fn bloom_insert_check() {
