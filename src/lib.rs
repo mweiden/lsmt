@@ -1,4 +1,5 @@
 pub mod bloom;
+pub mod cluster;
 pub mod memtable;
 pub mod query;
 pub mod schema;
@@ -10,6 +11,7 @@ pub mod zonemap;
 use base64::Engine;
 pub use query::SqlEngine;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Core database type combining an in-memory memtable with a persistent
 /// storage layer.
@@ -55,8 +57,15 @@ impl Database {
         &self.memtable
     }
 
-    /// Insert a key/value pair into the database.
-    pub async fn insert(&self, key: String, value: Vec<u8>) {
+    /// Current timestamp in microseconds since Unix epoch.
+    fn now_ts() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64
+    }
+
+    async fn insert_internal(&self, key: String, value: Vec<u8>) {
         // best effort to log the write ahead of applying it
         let mut rec = key.clone().into_bytes();
         rec.push(b'\t');
@@ -69,6 +78,19 @@ impl Database {
             // best-effort flush; ignore errors for now
             let _ = self.flush().await;
         }
+    }
+
+    /// Insert a key/value pair with an explicit timestamp.
+    pub async fn insert_ts(&self, key: String, value: Vec<u8>, ts: u64) {
+        let mut data = ts.to_be_bytes().to_vec();
+        data.extend_from_slice(&value);
+        self.insert_internal(key, data).await;
+    }
+
+    /// Insert a key/value pair into the database using the current time.
+    pub async fn insert(&self, key: String, value: Vec<u8>) {
+        let ts = Self::now_ts();
+        self.insert_ts(key, value, ts).await;
     }
 
     /// Retrieve the value associated with `key`, if it exists.
@@ -100,10 +122,16 @@ impl Database {
         self.memtable.clear().await;
     }
 
-    /// Insert a key/value pair into the provided namespace.
-    pub async fn insert_ns(&self, ns: &str, key: String, value: Vec<u8>) {
+    /// Insert a key/value pair into the provided namespace with explicit timestamp.
+    pub async fn insert_ns_ts(&self, ns: &str, key: String, value: Vec<u8>, ts: u64) {
         let namespaced = format!("{}:{}", ns, key);
-        self.insert(namespaced, value).await;
+        self.insert_ts(namespaced, value, ts).await;
+    }
+
+    /// Insert a key/value pair into the provided namespace using the current time.
+    pub async fn insert_ns(&self, ns: &str, key: String, value: Vec<u8>) {
+        let ts = Self::now_ts();
+        self.insert_ns_ts(ns, key, value, ts).await;
     }
 
     /// Retrieve a value from the given namespace.
