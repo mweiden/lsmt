@@ -1,14 +1,18 @@
-# lsmt
+# Cass
 
-Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apache_Cassandra) written in Rust.
+Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apache_Cassandra) written in Rust. Written mostly via [OpenAI Codex](https://chatgpt.com/codex).
 
 ## Features
 
-- REST API for querying
-- Async storage abstraction with local or S3 backends
-- Sharded write-ahead logs and in-memory tables for parallel ingestion
+- REST API with basic SQL syntax
+- Stores data in a [log-structured merge tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree)
 - Column-oriented SSTable placeholders with bloom filters and zone maps
+- Async storage abstraction with local or S3 backends
+- Sharded write-ahead logs for durability and in-memory tables for parallel ingestion
 - Dockerfile and docker-compose for containerized deployment
+- Horizontal scalability
+- Configurable replication
+- Gossip protocol consistency (last-write-wins conflict resolution)
 
 ## Query Syntax
 
@@ -68,25 +72,11 @@ AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
 
 `AWS_REGION` controls the region (default `us-east-1`).
 
-## Example
 
-With the server running you can insert and query data over HTTP:
+## Example / Docker Compose Cluster
 
-```bash
-# add a key/value pair
-curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
-# => {"op":"INSERT","unit":"row","count":1}
-
-# fetch the previously inserted value
-curl -X POST localhost:8080/query -d "SELECT value FROM kv WHERE key = 'hello'"
-# ["value" comes back as JSON]
-# => [{"value":"world"}]
-```
-
-## Docker Compose Cluster
-
-The provided `docker-compose.yml` starts a three-node cluster using local
-storage with a replication factor of two.
+With the server running you can insert and query data over HTTP. The provided `docker-compose.yml` starts a three-node cluster using local
+storage with a replication factor of two where you can try this out.
 
 Start the cluster:
 

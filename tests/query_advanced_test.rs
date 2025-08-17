@@ -1,5 +1,5 @@
-use lsmt::storage::{Storage, local::LocalStorage};
-use lsmt::{Database, SqlEngine};
+use cass::storage::{Storage, local::LocalStorage};
+use cass::{Database, SqlEngine};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
