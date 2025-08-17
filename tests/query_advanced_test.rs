@@ -1,5 +1,6 @@
 use lsmt::storage::{Storage, local::LocalStorage};
 use lsmt::{Database, SqlEngine};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -26,7 +27,8 @@ async fn update_delete_and_count() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(String::from_utf8(res).unwrap(), "2");
+    let val: Value = serde_json::from_slice(&res).unwrap();
+    assert_eq!(val, json!([{ "val": "2" }]));
 
     engine
         .execute(&db, "DELETE FROM kv WHERE id = 'a'")
@@ -35,8 +37,10 @@ async fn update_delete_and_count() {
     let res = engine
         .execute(&db, "SELECT val FROM kv WHERE id = 'a'")
         .await
+        .unwrap()
         .unwrap();
-    assert!(res.is_none());
+    let v: Value = serde_json::from_slice(&res).unwrap();
+    assert_eq!(v, json!([]));
 
     engine
         .execute(&db, "INSERT INTO kv (id, val) VALUES ('b','3')")
@@ -52,20 +56,23 @@ async fn update_delete_and_count() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(String::from_utf8(res).unwrap(), "2");
+    let v: Value = serde_json::from_slice(&res).unwrap();
+    assert_eq!(v, json!([{"count":2}]));
     let res = engine
         .execute(&db, "SELECT COUNT(*) FROM kv WHERE id = 'b'")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(String::from_utf8(res).unwrap(), "1");
+    let v: Value = serde_json::from_slice(&res).unwrap();
+    assert_eq!(v, json!([{"count":1}]));
 
     let res = engine
         .execute(&db, "SELECT COUNT(*) FROM kv WHERE val = '3'")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(String::from_utf8(res).unwrap(), "1");
+    let v: Value = serde_json::from_slice(&res).unwrap();
+    assert_eq!(v, json!([{"count":1}]));
 }
 
 #[tokio::test]
@@ -85,12 +92,34 @@ async fn table_names_and_cast() {
         .unwrap();
 
     let tables = engine.execute(&db, "SHOW TABLES").await.unwrap().unwrap();
-    assert_eq!(String::from_utf8(tables).unwrap().trim(), "kv");
+    let tbls: Value = serde_json::from_slice(&tables).unwrap();
+    assert_eq!(tbls, json!(["kv"]));
 
     let cast = engine
         .execute(&db, "SELECT CAST(val AS INT) FROM kv WHERE id = 'a'")
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(String::from_utf8(cast).unwrap(), "1");
+    let castv: Value = serde_json::from_slice(&cast).unwrap();
+    assert_eq!(castv, json!([{ "val": "1" }]));
+}
+
+#[tokio::test]
+async fn multi_row_insert_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(tmp.path()));
+    let db = Database::new(storage, "wal.log").await;
+    let engine = SqlEngine::new();
+
+    engine
+        .execute(&db, "CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))")
+        .await
+        .unwrap();
+    let res = engine
+        .execute(&db, "INSERT INTO kv (id, val) VALUES ('a','1'),('b','2')")
+        .await
+        .unwrap()
+        .unwrap();
+    let ack: Value = serde_json::from_slice(&res).unwrap();
+    assert_eq!(ack, json!({"op":"INSERT","unit":"row","count":2}));
 }

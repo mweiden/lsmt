@@ -1,3 +1,4 @@
+use serde_json::{Value, json};
 use std::{
     process::{Command, Stdio},
     thread,
@@ -55,7 +56,8 @@ async fn http_query_roundtrip() {
         .text()
         .await
         .unwrap();
-    assert_eq!(res, "bar");
+    let val: Value = serde_json::from_str(&res).unwrap();
+    assert_eq!(val, json!([{ "val": "bar" }]));
 
     let count = client
         .post(format!("{}/query", base))
@@ -66,7 +68,8 @@ async fn http_query_roundtrip() {
         .text()
         .await
         .unwrap();
-    assert_eq!(count, "1");
+    let cnt: Value = serde_json::from_str(&count).unwrap();
+    assert_eq!(cnt, json!([{"count":1}]));
 
     child.kill().unwrap();
 }

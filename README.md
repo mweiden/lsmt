@@ -75,9 +75,12 @@ With the server running you can insert and query data over HTTP:
 ```bash
 # add a key/value pair
 curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
+# => {"op":"INSERT","unit":"row","count":1}
 
 # fetch the previously inserted value
 curl -X POST localhost:8080/query -d "SELECT value FROM kv WHERE key = 'hello'"
+# ["value" comes back as JSON]
+# => [{"value":"world"}]
 ```
 
 ## Docker Compose Cluster
@@ -96,6 +99,7 @@ Insert via one node and query from the others:
 ```bash
 curl -X POST localhost:8080/query -d "CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))"
 curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
+# => {"op":"INSERT","unit":"row","count":1}
 curl -X POST localhost:8081/query -d "SELECT value FROM id WHERE key = 'hello'"
 curl -X POST localhost:8082/query -d "SELECT value FROM id WHERE key = 'hello'"
 ```

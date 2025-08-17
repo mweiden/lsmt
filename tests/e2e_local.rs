@@ -2,6 +2,7 @@ use lsmt::{
     Database, SqlEngine,
     storage::{Storage, local::LocalStorage},
 };
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -21,6 +22,8 @@ async fn e2e_insert_select() {
     let res = engine
         .execute(&db, "SELECT val FROM kv WHERE id='foo'")
         .await
+        .unwrap()
         .unwrap();
-    assert_eq!(res, Some(b"bar".to_vec()));
+    let val: Value = serde_json::from_slice(&res).unwrap();
+    assert_eq!(val, json!([{ "val": "bar" }]));
 }
