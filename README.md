@@ -1,4 +1,4 @@
-# lsmt
+# Cass
 
 Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apache_Cassandra) written in Rust.
 
