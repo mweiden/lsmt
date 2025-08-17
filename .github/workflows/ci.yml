@@ -19,3 +19,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+      - name: Generate coverage report
+        run: cargo tarpaulin --out Xml
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v3
+        with:
+          files: cobertura.xml
