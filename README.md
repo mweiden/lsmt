@@ -1,4 +1,5 @@
 # Cass
+[![codecov](https://codecov.io/gh/OWNER/cass/branch/main/graph/badge.svg)](https://codecov.io/gh/OWNER/cass)
 
 Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apache_Cassandra) written in Rust. Written mostly via [OpenAI Codex](https://chatgpt.com/codex).
 
