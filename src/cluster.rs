@@ -9,6 +9,7 @@ use murmur3::murmur3_32;
 use reqwest::Client;
 
 use crate::{Database, SqlEngine, query::QueryError};
+use serde_json::{Value, json};
 use sqlparser::ast::{ObjectType, Statement};
 
 /// Simple cluster management and request coordination.
@@ -106,7 +107,11 @@ impl Cluster {
         // broadcast to every node and whether it is a write.
         let mut broadcast = false;
         let mut is_write = false;
+        let mut first_stmt: Option<Statement> = None;
         if let Ok(stmts) = engine.parse(sql) {
+            if let Some(st) = stmts.first() {
+                first_stmt = Some(st.clone());
+            }
             broadcast = stmts.iter().all(|s| {
                 matches!(
                     s,
@@ -164,6 +169,7 @@ impl Cluster {
         let mut rows: BTreeMap<String, (u64, String)> = BTreeMap::new();
         let mut others: BTreeSet<String> = BTreeSet::new();
         let mut last_err: Option<QueryError> = None;
+        let mut total_count: u64 = 0;
         for node in replicas {
             let payload = if ts > 0 {
                 format!("--ts:{}\n{}", ts, sql)
@@ -202,21 +208,29 @@ impl Cluster {
 
             match resp {
                 Ok(Some(bytes)) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    for line in text.lines() {
-                        let parts: Vec<&str> = line.splitn(3, '\t').collect();
-                        if parts.len() == 3 {
-                            let key = parts[0].to_string();
-                            let ts: u64 = parts[1].parse().unwrap_or(0);
-                            let val = parts[2].to_string();
-                            match rows.get(&key) {
-                                Some((cur_ts, _)) if *cur_ts >= ts => {}
-                                _ => {
-                                    rows.insert(key, (ts, val));
-                                }
+                    if is_write {
+                        if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+                            if let Some(c) = v.get("count").and_then(|c| c.as_u64()) {
+                                total_count += c;
                             }
-                        } else if !line.is_empty() {
-                            others.insert(line.to_string());
+                        }
+                    } else {
+                        let text = String::from_utf8_lossy(&bytes);
+                        for line in text.lines() {
+                            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+                            if parts.len() == 3 {
+                                let key = parts[0].to_string();
+                                let ts: u64 = parts[1].parse().unwrap_or(0);
+                                let val = parts[2].to_string();
+                                match rows.get(&key) {
+                                    Some((cur_ts, _)) if *cur_ts >= ts => {}
+                                    _ => {
+                                        rows.insert(key, (ts, val));
+                                    }
+                                }
+                            } else if !line.is_empty() {
+                                others.insert(line.to_string());
+                            }
                         }
                     }
                 }
@@ -225,19 +239,45 @@ impl Cluster {
             }
         }
 
-        if !rows.is_empty() || !others.is_empty() {
-            let mut out: Vec<String> = Vec::new();
+        if is_write {
+            let count = match first_stmt {
+                Some(Statement::CreateTable(_))
+                | Some(Statement::Drop {
+                    object_type: ObjectType::Table,
+                    ..
+                }) => 1,
+                _ => total_count as usize,
+            };
+            let obj = match first_stmt {
+                Some(Statement::Insert(_)) => json!({"op":"INSERT","unit":"row","count":count}),
+                Some(Statement::Update { .. }) => json!({"op":"UPDATE","unit":"row","count":count}),
+                Some(Statement::Delete(_)) => json!({"op":"DELETE","unit":"row","count":count}),
+                Some(Statement::CreateTable(_)) => {
+                    json!({"op":"CREATE TABLE","unit":"table","count":count})
+                }
+                Some(Statement::Drop {
+                    object_type: ObjectType::Table,
+                    ..
+                }) => json!({"op":"DROP TABLE","unit":"table","count":count}),
+                _ => json!({"op":"UNKNOWN","unit":"","count":count}),
+            };
+            Ok(Some(serde_json::to_vec(&obj).unwrap()))
+        } else if !rows.is_empty() {
+            let mut arr: Vec<Value> = Vec::new();
             for (_k, (_ts, val)) in rows {
                 if !val.is_empty() {
-                    out.push(val);
+                    if let Ok(v) = serde_json::from_str::<Value>(&val) {
+                        arr.push(v);
+                    }
                 }
             }
-            out.extend(others.into_iter());
-            Ok(Some(out.join("\n").into_bytes()))
+            Ok(Some(serde_json::to_vec(&arr).unwrap()))
+        } else if !others.is_empty() {
+            Ok(Some(others.into_iter().next().unwrap().into_bytes()))
         } else if let Some(err) = last_err {
             Err(err)
         } else {
-            Ok(None)
+            Ok(Some(b"[]".to_vec()))
         }
     }
 }
