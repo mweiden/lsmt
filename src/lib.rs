@@ -27,16 +27,17 @@ pub struct Database {
 impl Database {
     /// Create a new database instance backed by the provided storage
     /// implementation.
-    pub async fn new(storage: Arc<dyn storage::Storage>, wal_path: impl Into<String>) -> Self {
+    pub async fn new(
+        storage: Arc<dyn storage::Storage>,
+        wal_path: impl Into<String>,
+    ) -> std::io::Result<Self> {
         let wal_path = wal_path.into();
-        let (wal, entries) = wal::Wal::new(storage.clone(), wal_path)
-            .await
-            .expect("create wal");
+        let (wal, entries) = wal::Wal::new(storage.clone(), wal_path).await?;
         let memtable = memtable::MemTable::new();
         for (k, v) in entries {
             memtable.insert(k, v).await;
         }
-        Self {
+        Ok(Self {
             storage,
             memtable,
             sstables: tokio::sync::RwLock::new(Vec::new()),
@@ -44,7 +45,7 @@ impl Database {
             max_memtable_size: 1024,
             next_id: std::sync::atomic::AtomicUsize::new(0),
             wal,
-        }
+        })
     }
 
     /// Return a reference to the configured storage backend.
@@ -61,7 +62,7 @@ impl Database {
     fn now_ts() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_micros() as u64
     }
 

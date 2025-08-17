@@ -22,7 +22,7 @@ fn split_ts(bytes: &[u8]) -> (u64, &[u8]) {
     if bytes.len() < 8 {
         return (0, bytes);
     }
-    let ts = u64::from_be_bytes(bytes[..8].try_into().unwrap());
+    let ts = u64::from_be_bytes(bytes[..8].try_into().unwrap_or([0; 8]));
     (ts, &bytes[8..])
 }
 
@@ -62,7 +62,7 @@ impl SqlEngine {
     pub async fn execute(&self, db: &Database, sql: &str) -> Result<Option<Vec<u8>>, QueryError> {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
             .as_micros() as u64;
         self.execute_with_ts(db, sql, ts, false).await
     }
@@ -96,7 +96,9 @@ impl SqlEngine {
             Statement::Insert(insert) => {
                 let count = self.exec_insert(db, insert, ts).await?;
                 let out = json!({"op":"INSERT","unit":"row","count":count});
-                Ok(Some(serde_json::to_vec(&out).unwrap()))
+                let bytes =
+                    serde_json::to_vec(&out).map_err(|e| QueryError::Other(e.to_string()))?;
+                Ok(Some(bytes))
             }
             Statement::Update {
                 table,
@@ -108,12 +110,16 @@ impl SqlEngine {
                     .exec_update(db, table, assignments, selection, ts)
                     .await?;
                 let out = json!({"op":"UPDATE","unit":"row","count":count});
-                Ok(Some(serde_json::to_vec(&out).unwrap()))
+                let bytes =
+                    serde_json::to_vec(&out).map_err(|e| QueryError::Other(e.to_string()))?;
+                Ok(Some(bytes))
             }
             Statement::Delete(delete) => {
                 let count = self.exec_delete(db, delete, ts).await?;
                 let out = json!({"op":"DELETE","unit":"row","count":count});
-                Ok(Some(serde_json::to_vec(&out).unwrap()))
+                let bytes =
+                    serde_json::to_vec(&out).map_err(|e| QueryError::Other(e.to_string()))?;
+                Ok(Some(bytes))
             }
             Statement::CreateTable(ct) => {
                 let ns = object_name_to_ns(&ct.name).ok_or(QueryError::Unsupported)?;
@@ -124,7 +130,9 @@ impl SqlEngine {
                 save_schema(db, &ns, &schema).await;
                 register_table(db, &ns).await;
                 let out = json!({"op":"CREATE TABLE","unit":"table","count":1});
-                Ok(Some(serde_json::to_vec(&out).unwrap()))
+                let bytes =
+                    serde_json::to_vec(&out).map_err(|e| QueryError::Other(e.to_string()))?;
+                Ok(Some(bytes))
             }
             Statement::ShowTables { .. } => self.exec_show_tables(db).await,
             Statement::Drop {
@@ -138,7 +146,9 @@ impl SqlEngine {
                     db.delete_ns("_tables", &ns).await;
                     db.delete_ns("_schemas", &ns).await;
                     let out = json!({"op":"DROP TABLE","unit":"table","count":1});
-                    Ok(Some(serde_json::to_vec(&out).unwrap()))
+                    let bytes =
+                        serde_json::to_vec(&out).map_err(|e| QueryError::Other(e.to_string()))?;
+                    Ok(Some(bytes))
                 } else {
                     Err(QueryError::Unsupported)
                 }
@@ -347,8 +357,13 @@ impl SqlEngine {
         if key_cols.iter().all(|c| cond_map.contains_key(c)) {
             let key_parts: Vec<String> = key_cols
                 .iter()
-                .map(|c| cond_map.get(c).cloned().unwrap())
-                .collect();
+                .map(|c| {
+                    cond_map
+                        .get(c)
+                        .cloned()
+                        .ok_or_else(|| QueryError::Other("missing key".to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let key = key_parts.join("|");
             if let Some(bytes) = db.get_ns(ns, &key).await {
                 let (_, data) = split_ts(&bytes);
@@ -387,7 +402,8 @@ impl SqlEngine {
             }
         }
         let out = json!([{ "count": count }]);
-        Ok(Some(serde_json::to_vec(&out).unwrap()))
+        let bytes = serde_json::to_vec(&out).map_err(|e| QueryError::Other(e.to_string()))?;
+        Ok(Some(bytes))
     }
 
     /// Simplified `SELECT` handler for schema-aware tables.
@@ -486,7 +502,9 @@ impl SqlEngine {
                 Ok(Some(meta_lines.join("\n").into_bytes()))
             }
         } else {
-            Ok(Some(serde_json::to_vec(&out_rows).unwrap()))
+            let bytes =
+                serde_json::to_vec(&out_rows).map_err(|e| QueryError::Other(e.to_string()))?;
+            Ok(Some(bytes))
         }
     }
 
@@ -499,7 +517,8 @@ impl SqlEngine {
             .map(|(k, _)| k)
             .collect();
         tables.sort();
-        Ok(Some(serde_json::to_vec(&tables).unwrap()))
+        let bytes = serde_json::to_vec(&tables).map_err(|e| QueryError::Other(e.to_string()))?;
+        Ok(Some(bytes))
     }
 
     /// Extract partition key values from `sql` for routing and replication.
@@ -613,8 +632,9 @@ async fn get_schema(db: &Database, table: &str) -> Option<TableSchema> {
 
 /// Persist a schema definition for a table.
 async fn save_schema(db: &Database, table: &str, schema: &TableSchema) {
-    let data = serde_json::to_vec(schema).unwrap_or_default();
-    db.insert_ns("_schemas", table.to_string(), data).await;
+    if let Ok(data) = serde_json::to_vec(schema) {
+        db.insert_ns("_schemas", table.to_string(), data).await;
+    }
 }
 
 /// Build a [`TableSchema`] from a parsed `CREATE TABLE` statement.

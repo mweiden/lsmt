@@ -48,6 +48,18 @@ cargo test            # run unit tests
 cargo run             # start the HTTP query service on port 8080
 ```
 
+### Contributing
+
+Before submitting changes, ensure the code is formatted and tests pass:
+
+```bash
+cargo fmt
+cargo test
+```
+
+The project uses idiomatic Rust patterns with small, focused functions. See the
+module-level comments in `src/` for a high-level overview of the architecture.
+
 ## Storage Backends
 
 The server supports both local filesystem storage and Amazon S3.

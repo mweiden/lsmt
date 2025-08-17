@@ -9,7 +9,7 @@ use std::sync::Arc;
 async fn e2e_insert_select() {
     let dir = tempfile::tempdir().unwrap();
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(dir.path()));
-    let db = Database::new(storage, "wal.log").await;
+    let db = Database::new(storage, "wal.log").await.unwrap();
     let engine = SqlEngine::new();
     engine
         .execute(&db, "CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))")

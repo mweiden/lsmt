@@ -5,11 +5,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use futures::future::join_all;
 use murmur3::murmur3_32;
 use reqwest::Client;
 
-use crate::{query::QueryError, Database, SqlEngine};
-use serde_json::{json, Value};
+use crate::{Database, SqlEngine, query::QueryError};
+use serde_json::{Value, json};
 use sqlparser::ast::{ObjectType, Statement};
 
 /// Simple cluster management and request coordination.
@@ -43,7 +44,7 @@ impl Cluster {
             for v in 0..vnodes.max(1) {
                 let token_key = format!("{}-{}", node, v);
                 let mut cursor = Cursor::new(token_key.as_bytes());
-                let token = murmur3_32(&mut cursor, 0).unwrap();
+                let token = murmur3_32(&mut cursor, 0).unwrap_or(0);
                 ring.insert(token, node.clone());
             }
         }
@@ -58,7 +59,7 @@ impl Cluster {
 
     fn replicas_for(&self, key: &str) -> Vec<String> {
         let mut cursor = Cursor::new(key.as_bytes());
-        let token = murmur3_32(&mut cursor, 0).unwrap();
+        let token = murmur3_32(&mut cursor, 0).unwrap_or(0);
         let mut reps = Vec::new();
         for (_k, node) in self.ring.range(token..) {
             if !reps.contains(node) {
@@ -140,7 +141,7 @@ impl Cluster {
         let ts = if is_write {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                 .as_micros() as u64
         } else {
             0
@@ -170,42 +171,55 @@ impl Cluster {
         let mut others: BTreeSet<String> = BTreeSet::new();
         let mut last_err: Option<QueryError> = None;
         let mut row_count: u64 = 0;
-        for node in replicas {
-            let payload = if ts > 0 {
-                format!("--ts:{}\n{}", ts, sql)
-            } else {
-                sql.to_string()
-            };
-            let resp = if node == self.self_addr {
-                engine.execute_with_ts(&self.db, sql, ts, true).await
-            } else {
-                let resp = self
-                    .client
-                    .post(format!("{}/internal", node))
-                    .body(payload)
-                    .send()
-                    .await;
-                match resp {
-                    Ok(resp) => {
-                        if resp.status().is_success() {
-                            match resp.bytes().await {
-                                Ok(bytes) => {
-                                    if bytes.is_empty() {
-                                        Ok(None)
-                                    } else {
-                                        Ok(Some(bytes.to_vec()))
+
+        let sql_string = sql.to_string();
+        let tasks: Vec<_> = replicas
+            .into_iter()
+            .map(|node| {
+                let db = self.db.clone();
+                let client = self.client.clone();
+                let self_addr = self.self_addr.clone();
+                let sql_clone = sql_string.clone();
+                async move {
+                    let payload = if ts > 0 {
+                        format!("--ts:{}\n{}", ts, sql_clone.clone())
+                    } else {
+                        sql_clone.clone()
+                    };
+                    if node == self_addr {
+                        let engine = SqlEngine::new();
+                        engine.execute_with_ts(&db, &sql_clone, ts, true).await
+                    } else {
+                        let resp = client
+                            .post(format!("{}/internal", node))
+                            .body(payload)
+                            .send()
+                            .await;
+                        match resp {
+                            Ok(resp) => {
+                                if resp.status().is_success() {
+                                    match resp.bytes().await {
+                                        Ok(bytes) => {
+                                            if bytes.is_empty() {
+                                                Ok(None)
+                                            } else {
+                                                Ok(Some(bytes.to_vec()))
+                                            }
+                                        }
+                                        Err(e) => Err(QueryError::Other(e.to_string())),
                                     }
+                                } else {
+                                    Err(QueryError::Other(format!("status {}", resp.status())))
                                 }
-                                Err(e) => Err(QueryError::Other(e.to_string())),
                             }
-                        } else {
-                            Err(QueryError::Other(format!("status {}", resp.status())))
+                            Err(e) => Err(QueryError::Other(e.to_string())),
                         }
                     }
-                    Err(e) => Err(QueryError::Other(e.to_string())),
                 }
-            };
+            })
+            .collect();
 
+        for resp in join_all(tasks).await {
             match resp {
                 Ok(Some(bytes)) => {
                     if is_write {
@@ -261,7 +275,8 @@ impl Cluster {
                 }) => json!({"op":"DROP TABLE","unit":"table","count":count}),
                 _ => json!({"op":"UNKNOWN","unit":"","count":count}),
             };
-            Ok(Some(serde_json::to_vec(&obj).unwrap()))
+            let bytes = serde_json::to_vec(&obj).map_err(|e| QueryError::Other(e.to_string()))?;
+            Ok(Some(bytes))
         } else if !rows.is_empty() {
             let mut arr: Vec<Value> = Vec::new();
             for (_k, (_ts, val)) in rows {
@@ -271,9 +286,14 @@ impl Cluster {
                     }
                 }
             }
-            Ok(Some(serde_json::to_vec(&arr).unwrap()))
+            let bytes = serde_json::to_vec(&arr).map_err(|e| QueryError::Other(e.to_string()))?;
+            Ok(Some(bytes))
         } else if !others.is_empty() {
-            Ok(Some(others.into_iter().next().unwrap().into_bytes()))
+            if let Some(line) = others.into_iter().next() {
+                Ok(Some(line.into_bytes()))
+            } else {
+                Ok(Some(b"[]".to_vec()))
+            }
         } else if let Some(err) = last_err {
             Err(err)
         } else {

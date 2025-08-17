@@ -8,7 +8,7 @@ use std::sync::Arc;
 async fn flush_and_query_from_sstable() {
     let dir = tempfile::tempdir().unwrap();
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(dir.path()));
-    let db = Database::new(storage, "wal.log").await;
+    let db = Database::new(storage, "wal.log").await.unwrap();
 
     db.insert("k1".to_string(), b"v1".to_vec()).await;
     db.insert("k2".to_string(), b"v2".to_vec()).await;
