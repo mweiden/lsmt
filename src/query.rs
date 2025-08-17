@@ -24,6 +24,9 @@ pub enum QueryError {
     /// The query is syntactically valid but not supported by the engine.
     #[error("unsupported query")]
     Unsupported,
+    /// Any other internal or I/O error.
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Simple SQL engine capable of executing a subset of SQL statements.
@@ -98,6 +101,7 @@ impl SqlEngine {
                     let ns = object_name_to_ns(name).ok_or(QueryError::Unsupported)?;
                     db.clear_ns(&ns).await;
                     db.delete_ns("_tables", &ns).await;
+                    db.delete_ns("_schemas", &ns).await;
                     Ok(None)
                 } else {
                     Err(QueryError::Unsupported)
@@ -405,6 +409,95 @@ impl SqlEngine {
         tables.sort();
         Ok(Some(tables.join("\n").into_bytes()))
     }
+
+    /// Extract partition key values from `sql` for routing and replication.
+    pub async fn partition_keys(
+        &self,
+        db: &Database,
+        sql: &str,
+    ) -> Result<Vec<String>, QueryError> {
+        let stmts = self.parse(sql)?;
+        let mut keys = Vec::new();
+        for stmt in stmts {
+            match stmt {
+                Statement::Insert(insert) => {
+                    let ns = match &insert.table {
+                        sqlparser::ast::TableObject::TableName(name) => {
+                            object_name_to_ns(name).ok_or(QueryError::Unsupported)?
+                        }
+                        _ => return Err(QueryError::Unsupported),
+                    };
+                    let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
+                    let source = insert.source.ok_or(QueryError::Unsupported)?;
+                    let values = match *source.body {
+                        SetExpr::Values(v) => v,
+                        _ => return Err(QueryError::Unsupported),
+                    };
+                    let row = values.rows.get(0).ok_or(QueryError::Unsupported)?;
+                    let cols: Vec<String> = if !insert.columns.is_empty() {
+                        insert
+                            .columns
+                            .iter()
+                            .map(|c| c.value.to_lowercase())
+                            .collect()
+                    } else {
+                        schema.columns.clone()
+                    };
+                    let mut parts = Vec::new();
+                    for (col, expr) in cols.iter().zip(row.iter()) {
+                        if schema.partition_keys.contains(col) {
+                            let val = expr_to_string(expr).ok_or(QueryError::Unsupported)?;
+                            parts.push(val);
+                        }
+                    }
+                    if !parts.is_empty() {
+                        keys.push(parts.join("|"));
+                    }
+                }
+                Statement::Update {
+                    table, selection, ..
+                } => {
+                    let ns = table_factor_to_ns(&table.relation).ok_or(QueryError::Unsupported)?;
+                    let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
+                    if let Some(expr) = selection {
+                        let map = where_to_multi_map(&expr);
+                        keys.extend(build_keys(&schema.partition_keys, &map));
+                    }
+                }
+                Statement::Delete(delete) => {
+                    let table = match &delete.from {
+                        FromTable::WithFromKeyword(t) | FromTable::WithoutKeyword(t) => t,
+                    };
+                    if table.len() != 1 {
+                        return Err(QueryError::Unsupported);
+                    }
+                    let ns =
+                        table_factor_to_ns(&table[0].relation).ok_or(QueryError::Unsupported)?;
+                    let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
+                    if let Some(expr) = delete.selection {
+                        let map = where_to_multi_map(&expr);
+                        keys.extend(build_keys(&schema.partition_keys, &map));
+                    }
+                }
+                Statement::Query(q) => {
+                    if let SetExpr::Select(select) = *q.body {
+                        if select.from.len() != 1 {
+                            return Err(QueryError::Unsupported);
+                        }
+                        let ns = table_factor_to_ns(&select.from[0].relation)
+                            .ok_or(QueryError::Unsupported)?;
+                        let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
+                        if let Some(expr) = select.selection {
+                            let map = where_to_multi_map(&expr);
+                            keys.extend(build_keys(&schema.partition_keys, &map));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(keys)
+    }
 }
 
 /// Register a table name in the internal catalog if it does not already exist.
@@ -482,6 +575,67 @@ fn expr_to_string(expr: &Expr) -> Option<String> {
         },
         _ => None,
     }
+}
+
+/// Convert a WHERE clause into a map of column -> possible values, supporting `IN` lists.
+fn where_to_multi_map(expr: &Expr) -> BTreeMap<String, Vec<String>> {
+    fn collect(e: &Expr, out: &mut BTreeMap<String, Vec<String>>) {
+        match e {
+            Expr::BinaryOp { left, op, right } => {
+                if *op == BinaryOperator::And {
+                    collect(left, out);
+                    collect(right, out);
+                } else if *op == BinaryOperator::Eq {
+                    if let Expr::Identifier(id) = &**left {
+                        if let Some(val) = expr_to_string(right) {
+                            out.entry(id.value.to_lowercase()).or_default().push(val);
+                        }
+                    }
+                }
+            }
+            Expr::InList { expr, list, .. } => {
+                if let Expr::Identifier(id) = &**expr {
+                    let vals: Vec<String> = list.iter().filter_map(expr_to_string).collect();
+                    if !vals.is_empty() {
+                        out.entry(id.value.to_lowercase()).or_default().extend(vals);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut map = BTreeMap::new();
+    collect(expr, &mut map);
+    map
+}
+
+/// Build partition key strings from column values, generating all combinations.
+fn build_keys(pk_cols: &[String], map: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+    if pk_cols.is_empty() {
+        return Vec::new();
+    }
+    let mut lists = Vec::new();
+    for col in pk_cols {
+        if let Some(vals) = map.get(col) {
+            lists.push(vals.clone());
+        } else {
+            return Vec::new();
+        }
+    }
+    fn expand(idx: usize, lists: &[Vec<String>], cur: &mut Vec<String>, out: &mut Vec<String>) {
+        if idx == lists.len() {
+            out.push(cur.join("|"));
+            return;
+        }
+        for v in &lists[idx] {
+            cur.push(v.clone());
+            expand(idx + 1, lists, cur, out);
+            cur.pop();
+        }
+    }
+    let mut out = Vec::new();
+    expand(0, &lists, &mut Vec::new(), &mut out);
+    out
 }
 
 /// Convert a simple WHERE clause into a map of column -> value.

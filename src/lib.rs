@@ -1,4 +1,5 @@
 pub mod bloom;
+pub mod cluster;
 pub mod memtable;
 pub mod query;
 pub mod schema;
