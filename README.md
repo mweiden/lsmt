@@ -11,8 +11,8 @@ Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apach
 - Sharded write-ahead logs for durability and in-memory tables for parallel ingestion
 - Dockerfile and docker-compose for containerized deployment
 - Horizontal scalability
-- Configurable replication on a gossip protocol
-- Consistency: last-write-wins conflict resolution
+- Configurable replication
+- Gossip protocol consistency (last-write-wins conflict resolution)
 
 ## Query Syntax
 
