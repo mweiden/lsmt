@@ -72,6 +72,7 @@ AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
 
 `AWS_REGION` controls the region (default `us-east-1`).
 
+
 ## Example / Docker Compose Cluster
 
 With the server running you can insert and query data over HTTP. The provided `docker-compose.yml` starts a three-node cluster using local
@@ -88,6 +89,7 @@ Insert via one node and query from the others:
 ```bash
 curl -X POST localhost:8080/query -d "CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))"
 curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
+# => {"op":"INSERT","unit":"row","count":1}
 curl -X POST localhost:8081/query -d "SELECT value FROM id WHERE key = 'hello'"
 curl -X POST localhost:8082/query -d "SELECT value FROM id WHERE key = 'hello'"
 ```

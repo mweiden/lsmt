@@ -5,6 +5,7 @@ use std::{
 };
 
 use reqwest::Client;
+use serde_json::{json, Value};
 
 #[tokio::test]
 async fn union_and_lww_across_replicas() {
@@ -102,7 +103,8 @@ async fn union_and_lww_across_replicas() {
         .text()
         .await
         .unwrap();
-    assert_eq!(res_a, "va2");
+    let val_a: Value = serde_json::from_str(&res_a).unwrap();
+    assert_eq!(val_a, json!([{ "val": "va2" }]));
 
     let res_b = client
         .post(format!("{}/query", base1))
@@ -113,7 +115,8 @@ async fn union_and_lww_across_replicas() {
         .text()
         .await
         .unwrap();
-    assert_eq!(res_b, "vb");
+    let val_b: Value = serde_json::from_str(&res_b).unwrap();
+    assert_eq!(val_b, json!([{ "val": "vb" }]));
 
     let res_c = client
         .post(format!("{}/query", base1))
@@ -124,7 +127,20 @@ async fn union_and_lww_across_replicas() {
         .text()
         .await
         .unwrap();
-    assert_eq!(res_c, "va2\nvb");
+    let val_c: Value = serde_json::from_str(&res_c).unwrap();
+    assert_eq!(val_c, json!([{ "val": "va2" }, { "val": "vb" }]));
+
+    let ack = client
+        .post(format!("{}/query", base1))
+        .body("INSERT INTO kv (id, val) VALUES ('x','1'),('y','2')")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let v: Value = serde_json::from_str(&ack).unwrap();
+    assert_eq!(v, json!({"op":"INSERT","unit":"row","count":2}));
 
     child1.kill().unwrap();
     child2.kill().unwrap();

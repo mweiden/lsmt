@@ -1,5 +1,6 @@
 use cass::storage::{Storage, local::LocalStorage};
 use cass::{Database, SqlEngine};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 #[tokio::test]
@@ -30,7 +31,8 @@ async fn create_insert_select_schema_table() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(String::from_utf8(res).unwrap(), "hello");
+    let val: Value = serde_json::from_slice(&res).unwrap();
+    assert_eq!(val, json!([{ "value": "hello" }]));
 }
 
 #[tokio::test]
