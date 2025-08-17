@@ -1,6 +1,8 @@
 //! Minimal SQL execution engine for the key-value store.
 
 use std::collections::BTreeMap;
+use std::convert::TryInto;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlparser::ast::{
     Assignment, AssignmentTarget, BinaryOperator, ColumnOption, DataType, Delete, Expr, FromTable,
@@ -15,6 +17,14 @@ use crate::{
     schema::{TableSchema, decode_row, encode_row},
 };
 
+fn split_ts(bytes: &[u8]) -> (u64, &[u8]) {
+    if bytes.len() < 8 {
+        return (0, bytes);
+    }
+    let ts = u64::from_be_bytes(bytes[..8].try_into().unwrap());
+    (ts, &bytes[8..])
+}
+
 /// Errors that can occur when parsing or executing a query.
 #[derive(thiserror::Error, Debug)]
 pub enum QueryError {
@@ -24,6 +34,9 @@ pub enum QueryError {
     /// The query is syntactically valid but not supported by the engine.
     #[error("unsupported query")]
     Unsupported,
+    /// Any other internal or I/O error.
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Simple SQL engine capable of executing a subset of SQL statements.
@@ -46,10 +59,26 @@ impl SqlEngine {
 
     /// Execute `sql` against the provided [`Database`].
     pub async fn execute(&self, db: &Database, sql: &str) -> Result<Option<Vec<u8>>, QueryError> {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_micros() as u64;
+        self.execute_with_ts(db, sql, ts, false).await
+    }
+
+    /// Execute `sql` with a supplied timestamp. When `meta` is true, results
+    /// will include the row key and mutation timestamp.
+    pub async fn execute_with_ts(
+        &self,
+        db: &Database,
+        sql: &str,
+        ts: u64,
+        meta: bool,
+    ) -> Result<Option<Vec<u8>>, QueryError> {
         let stmts = self.parse(sql)?;
         let mut result = None;
         for stmt in stmts {
-            result = self.execute_stmt(db, stmt).await?;
+            result = self.execute_stmt(db, stmt, ts, meta).await?;
         }
         Ok(result)
     }
@@ -59,10 +88,12 @@ impl SqlEngine {
         &self,
         db: &Database,
         stmt: Statement,
+        ts: u64,
+        meta: bool,
     ) -> Result<Option<Vec<u8>>, QueryError> {
         match stmt {
             Statement::Insert(insert) => {
-                self.exec_insert(db, insert).await?;
+                self.exec_insert(db, insert, ts).await?;
                 Ok(None)
             }
             Statement::Update {
@@ -71,11 +102,12 @@ impl SqlEngine {
                 selection,
                 ..
             } => {
-                self.exec_update(db, table, assignments, selection).await?;
+                self.exec_update(db, table, assignments, selection, ts)
+                    .await?;
                 Ok(None)
             }
             Statement::Delete(delete) => {
-                self.exec_delete(db, delete).await?;
+                self.exec_delete(db, delete, ts).await?;
                 Ok(None)
             }
             Statement::CreateTable(ct) => {
@@ -98,18 +130,19 @@ impl SqlEngine {
                     let ns = object_name_to_ns(name).ok_or(QueryError::Unsupported)?;
                     db.clear_ns(&ns).await;
                     db.delete_ns("_tables", &ns).await;
+                    db.delete_ns("_schemas", &ns).await;
                     Ok(None)
                 } else {
                     Err(QueryError::Unsupported)
                 }
             }
-            Statement::Query(q) => self.exec_query(db, q).await,
+            Statement::Query(q) => self.exec_query(db, q, meta).await,
             _ => Err(QueryError::Unsupported),
         }
     }
 
     /// Handle an `INSERT` statement inserting a single key/value pair.
-    async fn exec_insert(&self, db: &Database, insert: Insert) -> Result<(), QueryError> {
+    async fn exec_insert(&self, db: &Database, insert: Insert, ts: u64) -> Result<(), QueryError> {
         let ns = match &insert.table {
             sqlparser::ast::TableObject::TableName(name) => {
                 object_name_to_ns(name).ok_or(QueryError::Unsupported)?
@@ -151,7 +184,7 @@ impl SqlEngine {
         }
         let key = key_parts.join("|");
         let data = encode_row(&data_map);
-        db.insert_ns(&ns, key, data).await;
+        db.insert_ns_ts(&ns, key, data, ts).await;
         Ok(())
     }
 
@@ -162,6 +195,7 @@ impl SqlEngine {
         table: TableWithJoins,
         assignments: Vec<Assignment>,
         selection: Option<Expr>,
+        ts: u64,
     ) -> Result<(), QueryError> {
         let ns = table_factor_to_ns(&table.relation).ok_or(QueryError::Unsupported)?;
         let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
@@ -179,7 +213,8 @@ impl SqlEngine {
         }
         let key = key_parts.join("|");
         let mut row_map = if let Some(bytes) = db.get_ns(&ns, &key).await {
-            decode_row(&bytes)
+            let (_, data) = split_ts(&bytes);
+            decode_row(data)
         } else {
             BTreeMap::new()
         };
@@ -197,12 +232,12 @@ impl SqlEngine {
             }
         }
         let data = encode_row(&row_map);
-        db.insert_ns(&ns, key, data).await;
+        db.insert_ns_ts(&ns, key, data, ts).await;
         Ok(())
     }
 
     /// Handle a `DELETE` statement for a single key.
-    async fn exec_delete(&self, db: &Database, delete: Delete) -> Result<(), QueryError> {
+    async fn exec_delete(&self, db: &Database, delete: Delete, ts: u64) -> Result<(), QueryError> {
         let table = match &delete.from {
             FromTable::WithFromKeyword(t) | FromTable::WithoutKeyword(t) => t,
         };
@@ -224,7 +259,8 @@ impl SqlEngine {
             }
         }
         let key = key_parts.join("|");
-        db.delete_ns(&ns, &key).await;
+        // record tombstone with timestamp
+        db.insert_ns_ts(&ns, key, Vec::new(), ts).await;
         Ok(())
     }
 
@@ -233,10 +269,11 @@ impl SqlEngine {
         &self,
         db: &Database,
         q: Box<Query>,
+        meta: bool,
     ) -> Result<Option<Vec<u8>>, QueryError> {
         match *q.body {
             SetExpr::Select(select) => {
-                self.exec_select(db, *select, q.order_by, q.limit_clause)
+                self.exec_select(db, *select, q.order_by, q.limit_clause, meta)
                     .await
             }
             _ => Err(QueryError::Unsupported),
@@ -250,6 +287,7 @@ impl SqlEngine {
         select: Select,
         _order: Option<OrderBy>,
         _limit: Option<LimitClause>,
+        meta: bool,
     ) -> Result<Option<Vec<u8>>, QueryError> {
         if select.from.len() != 1 {
             return Err(QueryError::Unsupported);
@@ -267,7 +305,8 @@ impl SqlEngine {
             }
         }
 
-        self.exec_select_schema(db, &ns, &schema, select).await
+        self.exec_select_schema(db, &ns, &schema, select, meta)
+            .await
     }
 
     /// Execute a `COUNT(*)` query with optional equality filters.
@@ -292,7 +331,11 @@ impl SqlEngine {
                 .collect();
             let key = key_parts.join("|");
             if let Some(bytes) = db.get_ns(ns, &key).await {
-                let mut row_map = decode_row(&bytes);
+                let (_, data) = split_ts(&bytes);
+                if data.is_empty() {
+                    return Ok(Some("0".into()));
+                }
+                let mut row_map = decode_row(data);
                 for col in &key_cols {
                     if let Some(v) = cond_map.get(col) {
                         row_map.insert(col.clone(), v.clone());
@@ -312,7 +355,11 @@ impl SqlEngine {
         let rows = db.scan_ns(ns).await;
         let mut count = 0;
         for (k, bytes) in rows {
-            let mut row_map = decode_row(&bytes);
+            let (_, data) = split_ts(&bytes);
+            if data.is_empty() {
+                continue;
+            }
+            let mut row_map = decode_row(data);
             for (col, part) in key_cols.iter().zip(k.split('|')) {
                 row_map.insert(col.clone(), part.to_string());
             }
@@ -337,6 +384,7 @@ impl SqlEngine {
         ns: &str,
         schema: &TableSchema,
         select: Select,
+        meta: bool,
     ) -> Result<Option<Vec<u8>>, QueryError> {
         if select.projection.len() != 1 {
             return Err(QueryError::Unsupported);
@@ -357,13 +405,19 @@ impl SqlEngine {
             }
         }
         let key = key_parts.join("|");
-        let row_bytes = db.get_ns(ns, &key).await;
-        let row_bytes = if let Some(b) = row_bytes {
-            b
-        } else {
-            return Ok(None);
+        let row_bytes = match db.get_ns(ns, &key).await {
+            Some(b) => b,
+            None => return Ok(None),
         };
-        let mut row_map = decode_row(&row_bytes);
+        let (ts, data) = split_ts(&row_bytes);
+        if data.is_empty() {
+            if meta {
+                return Ok(Some(format!("{key}\t{ts}\t").into_bytes()));
+            } else {
+                return Ok(None);
+            }
+        }
+        let mut row_map = decode_row(data);
         // include key columns
         for (col, val) in cond_map {
             row_map.insert(col, val);
@@ -391,7 +445,16 @@ impl SqlEngine {
             SelectItem::Wildcard(_) => Some(encode_row(&row_map)),
             _ => return Err(QueryError::Unsupported),
         };
-        Ok(result)
+        if meta {
+            if let Some(bytes) = result {
+                let val = String::from_utf8_lossy(&bytes);
+                Ok(Some(format!("{key}\t{ts}\t{}", val).into_bytes()))
+            } else {
+                Ok(Some(format!("{key}\t{ts}\t").into_bytes()))
+            }
+        } else {
+            Ok(result)
+        }
     }
 
     /// Return a newline-delimited list of registered table names.
@@ -405,6 +468,95 @@ impl SqlEngine {
         tables.sort();
         Ok(Some(tables.join("\n").into_bytes()))
     }
+
+    /// Extract partition key values from `sql` for routing and replication.
+    pub async fn partition_keys(
+        &self,
+        db: &Database,
+        sql: &str,
+    ) -> Result<Vec<String>, QueryError> {
+        let stmts = self.parse(sql)?;
+        let mut keys = Vec::new();
+        for stmt in stmts {
+            match stmt {
+                Statement::Insert(insert) => {
+                    let ns = match &insert.table {
+                        sqlparser::ast::TableObject::TableName(name) => {
+                            object_name_to_ns(name).ok_or(QueryError::Unsupported)?
+                        }
+                        _ => return Err(QueryError::Unsupported),
+                    };
+                    let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
+                    let source = insert.source.ok_or(QueryError::Unsupported)?;
+                    let values = match *source.body {
+                        SetExpr::Values(v) => v,
+                        _ => return Err(QueryError::Unsupported),
+                    };
+                    let row = values.rows.get(0).ok_or(QueryError::Unsupported)?;
+                    let cols: Vec<String> = if !insert.columns.is_empty() {
+                        insert
+                            .columns
+                            .iter()
+                            .map(|c| c.value.to_lowercase())
+                            .collect()
+                    } else {
+                        schema.columns.clone()
+                    };
+                    let mut parts = Vec::new();
+                    for (col, expr) in cols.iter().zip(row.iter()) {
+                        if schema.partition_keys.contains(col) {
+                            let val = expr_to_string(expr).ok_or(QueryError::Unsupported)?;
+                            parts.push(val);
+                        }
+                    }
+                    if !parts.is_empty() {
+                        keys.push(parts.join("|"));
+                    }
+                }
+                Statement::Update {
+                    table, selection, ..
+                } => {
+                    let ns = table_factor_to_ns(&table.relation).ok_or(QueryError::Unsupported)?;
+                    let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
+                    if let Some(expr) = selection {
+                        let map = where_to_multi_map(&expr);
+                        keys.extend(build_keys(&schema.partition_keys, &map));
+                    }
+                }
+                Statement::Delete(delete) => {
+                    let table = match &delete.from {
+                        FromTable::WithFromKeyword(t) | FromTable::WithoutKeyword(t) => t,
+                    };
+                    if table.len() != 1 {
+                        return Err(QueryError::Unsupported);
+                    }
+                    let ns =
+                        table_factor_to_ns(&table[0].relation).ok_or(QueryError::Unsupported)?;
+                    let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
+                    if let Some(expr) = delete.selection {
+                        let map = where_to_multi_map(&expr);
+                        keys.extend(build_keys(&schema.partition_keys, &map));
+                    }
+                }
+                Statement::Query(q) => {
+                    if let SetExpr::Select(select) = *q.body {
+                        if select.from.len() != 1 {
+                            return Err(QueryError::Unsupported);
+                        }
+                        let ns = table_factor_to_ns(&select.from[0].relation)
+                            .ok_or(QueryError::Unsupported)?;
+                        let schema = get_schema(db, &ns).await.ok_or(QueryError::Unsupported)?;
+                        if let Some(expr) = select.selection {
+                            let map = where_to_multi_map(&expr);
+                            keys.extend(build_keys(&schema.partition_keys, &map));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(keys)
+    }
 }
 
 /// Register a table name in the internal catalog if it does not already exist.
@@ -416,9 +568,10 @@ async fn register_table(db: &Database, table: &str) {
 
 /// Retrieve the schema for a table if it exists.
 async fn get_schema(db: &Database, table: &str) -> Option<TableSchema> {
-    db.get_ns("_schemas", table)
-        .await
-        .and_then(|v| serde_json::from_slice(&v).ok())
+    db.get_ns("_schemas", table).await.and_then(|v| {
+        let (_, data) = split_ts(&v);
+        serde_json::from_slice(data).ok()
+    })
 }
 
 /// Persist a schema definition for a table.
@@ -482,6 +635,67 @@ fn expr_to_string(expr: &Expr) -> Option<String> {
         },
         _ => None,
     }
+}
+
+/// Convert a WHERE clause into a map of column -> possible values, supporting `IN` lists.
+fn where_to_multi_map(expr: &Expr) -> BTreeMap<String, Vec<String>> {
+    fn collect(e: &Expr, out: &mut BTreeMap<String, Vec<String>>) {
+        match e {
+            Expr::BinaryOp { left, op, right } => {
+                if *op == BinaryOperator::And {
+                    collect(left, out);
+                    collect(right, out);
+                } else if *op == BinaryOperator::Eq {
+                    if let Expr::Identifier(id) = &**left {
+                        if let Some(val) = expr_to_string(right) {
+                            out.entry(id.value.to_lowercase()).or_default().push(val);
+                        }
+                    }
+                }
+            }
+            Expr::InList { expr, list, .. } => {
+                if let Expr::Identifier(id) = &**expr {
+                    let vals: Vec<String> = list.iter().filter_map(expr_to_string).collect();
+                    if !vals.is_empty() {
+                        out.entry(id.value.to_lowercase()).or_default().extend(vals);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut map = BTreeMap::new();
+    collect(expr, &mut map);
+    map
+}
+
+/// Build partition key strings from column values, generating all combinations.
+fn build_keys(pk_cols: &[String], map: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+    if pk_cols.is_empty() {
+        return Vec::new();
+    }
+    let mut lists = Vec::new();
+    for col in pk_cols {
+        if let Some(vals) = map.get(col) {
+            lists.push(vals.clone());
+        } else {
+            return Vec::new();
+        }
+    }
+    fn expand(idx: usize, lists: &[Vec<String>], cur: &mut Vec<String>, out: &mut Vec<String>) {
+        if idx == lists.len() {
+            out.push(cur.join("|"));
+            return;
+        }
+        for v in &lists[idx] {
+            cur.push(v.clone());
+            expand(idx + 1, lists, cur, out);
+            cur.pop();
+        }
+    }
+    let mut out = Vec::new();
+    expand(0, &lists, &mut Vec::new(), &mut out);
+    out
 }
 
 /// Convert a simple WHERE clause into a map of column -> value.

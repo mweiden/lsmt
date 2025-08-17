@@ -16,5 +16,6 @@ async fn wal_recovery_after_restart() {
     }
     let storage: Arc<dyn Storage> = Arc::new(LocalStorage::new(&path));
     let db = Database::new(storage, wal).await;
-    assert_eq!(db.get("k1").await, Some(b"v1".to_vec()));
+    let v1 = db.get("k1").await.map(|b| b[8..].to_vec());
+    assert_eq!(v1, Some(b"v1".to_vec()));
 }
