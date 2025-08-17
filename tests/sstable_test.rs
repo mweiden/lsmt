@@ -1,4 +1,7 @@
-use cass::{sstable::SsTable, storage::local::LocalStorage};
+use cass::{
+    sstable::SsTable,
+    storage::{Storage, local::LocalStorage},
+};
 
 #[tokio::test]
 async fn sstable_roundtrip() {
