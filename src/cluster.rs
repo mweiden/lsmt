@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     io::Cursor,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use murmur3::murmur3_32;
@@ -88,11 +89,23 @@ impl Cluster {
     pub async fn execute(&self, sql: &str, forwarded: bool) -> Result<Option<Vec<u8>>, QueryError> {
         let engine = SqlEngine::new();
         if forwarded {
-            return engine.execute(&self.db, sql).await;
+            let (ts, real_sql) = if let Some(rest) = sql.strip_prefix("--ts:") {
+                if let Some(pos) = rest.find('\n') {
+                    let ts = rest[..pos].parse().unwrap_or(0);
+                    (ts, &rest[pos + 1..])
+                } else {
+                    (0, sql)
+                }
+            } else {
+                (0, sql)
+            };
+            return engine.execute_with_ts(&self.db, real_sql, ts, true).await;
         }
+
         // Determine if the statement is a schema mutation that should be
-        // broadcast to every node.
+        // broadcast to every node and whether it is a write.
         let mut broadcast = false;
+        let mut is_write = false;
         if let Ok(stmts) = engine.parse(sql) {
             broadcast = stmts.iter().all(|s| {
                 matches!(
@@ -104,7 +117,29 @@ impl Cluster {
                         }
                 )
             });
+            is_write = stmts.iter().any(|s| {
+                matches!(
+                    s,
+                    Statement::Insert(_)
+                        | Statement::Update { .. }
+                        | Statement::Delete(_)
+                        | Statement::CreateTable(_)
+                        | Statement::Drop {
+                            object_type: ObjectType::Table,
+                            ..
+                        }
+                )
+            });
         }
+
+        let ts = if is_write {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as u64
+        } else {
+            0
+        };
 
         // Work out the target replica set.
         let mut replicas: HashSet<String> = HashSet::new();
@@ -125,17 +160,23 @@ impl Cluster {
             }
         }
 
-        // Collect results from all replicas, unioning unique responses.
-        let mut results: BTreeSet<String> = BTreeSet::new();
+        // Collect results from all replicas, performing last-write-wins per key.
+        let mut rows: BTreeMap<String, (u64, String)> = BTreeMap::new();
+        let mut others: BTreeSet<String> = BTreeSet::new();
         let mut last_err: Option<QueryError> = None;
         for node in replicas {
+            let payload = if ts > 0 {
+                format!("--ts:{}\n{}", ts, sql)
+            } else {
+                sql.to_string()
+            };
             let resp = if node == self.self_addr {
-                engine.execute(&self.db, sql).await
+                engine.execute_with_ts(&self.db, sql, ts, true).await
             } else {
                 let resp = self
                     .client
                     .post(format!("{}/internal", node))
-                    .body(sql.to_string())
+                    .body(payload)
                     .send()
                     .await;
                 match resp {
@@ -161,16 +202,38 @@ impl Cluster {
 
             match resp {
                 Ok(Some(bytes)) => {
-                    results.insert(String::from_utf8_lossy(&bytes).to_string());
+                    let text = String::from_utf8_lossy(&bytes);
+                    for line in text.lines() {
+                        let parts: Vec<&str> = line.splitn(3, '\t').collect();
+                        if parts.len() == 3 {
+                            let key = parts[0].to_string();
+                            let ts: u64 = parts[1].parse().unwrap_or(0);
+                            let val = parts[2].to_string();
+                            match rows.get(&key) {
+                                Some((cur_ts, _)) if *cur_ts >= ts => {}
+                                _ => {
+                                    rows.insert(key, (ts, val));
+                                }
+                            }
+                        } else if !line.is_empty() {
+                            others.insert(line.to_string());
+                        }
+                    }
                 }
                 Ok(None) => {}
                 Err(e) => last_err = Some(e),
             }
         }
 
-        if !results.is_empty() {
-            let joined = results.into_iter().collect::<Vec<_>>().join("\n");
-            Ok(Some(joined.into_bytes()))
+        if !rows.is_empty() || !others.is_empty() {
+            let mut out: Vec<String> = Vec::new();
+            for (_k, (_ts, val)) in rows {
+                if !val.is_empty() {
+                    out.push(val);
+                }
+            }
+            out.extend(others.into_iter());
+            Ok(Some(out.join("\n").into_bytes()))
         } else if let Some(err) = last_err {
             Err(err)
         } else {
