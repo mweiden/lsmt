@@ -4,15 +4,17 @@ Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apach
 
 ## Features
 
-- REST API with basic SQL syntax
-- Stores data in a [log-structured merge tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree)
-- Column-oriented SSTable placeholders with bloom filters and zone maps
-- Async storage abstraction with local or S3 backends
-- Sharded write-ahead logs for durability and in-memory tables for parallel ingestion
-- Dockerfile and docker-compose for containerized deployment
-- Horizontal scalability
-- Configurable replication
-- Gossip protocol consistency (last-write-wins conflict resolution)
+- **HTTP API:** with basic SQL syntax
+- **Data Structure:** Stores data in a [log-structured merge tree](https://en.wikipedia.org/wiki/Log-structured_merge-tree)
+- **Storage:** Column-oriented SSTable placeholders with bloom filters and zone maps to speed up queries; persist to local or S3 AWS backends
+- **Durability / Recovery:** Sharded write-ahead logs for durability and in-memory tables for parallel ingestion
+- **Deployment:** Dockerfile and docker-compose for containerized deployment and local testing
+- **Scalability:** Horizontally scalable
+
+Design tradeoffs:
+- **Consistency:** Consistency is relaxed, last-write-wins conflict resolution
+- **Availability:** always writable, tunably consistent, fault-tolerant through replication
+- **Partition tolerance:** will continue to work even if parts of the cluster cannot communicate
 
 ## Query Syntax
 
