@@ -1,10 +1,55 @@
 version: '3.8'
 services:
-  lsmt:
+  lsmt1:
     build: .
     volumes:
-      - ./data:/data
-    environment:
-      - LSMT_DATA=/data
+      - ./data1:/data
+    command:
+      - "--node-addr"
+      - "http://lsmt1:8080"
+      - "--peer"
+      - "http://lsmt2:8080"
+      - "--peer"
+      - "http://lsmt3:8080"
+      - "--data-dir"
+      - "/data"
+      - "--rf"
+      - "2"
     ports:
       - "8080:8080"
+
+  lsmt2:
+    build: .
+    volumes:
+      - ./data2:/data
+    command:
+      - "--node-addr"
+      - "http://lsmt2:8080"
+      - "--peer"
+      - "http://lsmt1:8080"
+      - "--peer"
+      - "http://lsmt3:8080"
+      - "--data-dir"
+      - "/data"
+      - "--rf"
+      - "2"
+    ports:
+      - "8081:8080"
+
+  lsmt3:
+    build: .
+    volumes:
+      - ./data3:/data
+    command:
+      - "--node-addr"
+      - "http://lsmt3:8080"
+      - "--peer"
+      - "http://lsmt1:8080"
+      - "--peer"
+      - "http://lsmt2:8080"
+      - "--data-dir"
+      - "/data"
+      - "--rf"
+      - "2"
+    ports:
+      - "8082:8080"
