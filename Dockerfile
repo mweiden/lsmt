@@ -12,14 +12,14 @@
     # real sources
     COPY . .
     
-    # If your binary target is named `lsmt` (change if different):
+    # If your binary target is named `cass` (change if different):
     #   - add --bin <name> if your package defines multiple binaries or you're in a workspace
     RUN --mount=type=cache,target=/usr/local/cargo/registry \
         --mount=type=cache,target=/app/target \
-        cargo install --path . --bin lsmt --locked --root /out
+        cargo install --path . --bin cass --locked --root /out
     
     # ---- Runtime stage ----
     FROM debian:bookworm-slim
     # If needed: RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
-    COPY --from=build /out/bin/lsmt /usr/local/bin/lsmt
-    CMD ["lsmt"]
+    COPY --from=build /out/bin/cass /usr/local/bin/cass
+    CMD ["cass"]

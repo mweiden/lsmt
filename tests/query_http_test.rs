@@ -7,9 +7,9 @@ use std::{
 
 #[tokio::test]
 async fn http_query_roundtrip() {
-    let _ = std::fs::remove_dir_all("/tmp/lsmt-data");
+    let _ = std::fs::remove_dir_all("/tmp/cass-data");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lsmt"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cass"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

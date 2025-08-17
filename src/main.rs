@@ -1,12 +1,12 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{Router, extract::State, http::StatusCode, routing::post};
-use clap::{Parser, ValueEnum};
-use lsmt::{
+use cass::{
     Database,
     cluster::Cluster,
     storage::{Storage, local::LocalStorage, s3::S3Storage},
 };
+use clap::{Parser, ValueEnum};
 use reqwest::Url;
 
 type DynStorage = Arc<dyn Storage>;
@@ -15,7 +15,7 @@ type DynStorage = Arc<dyn Storage>;
 struct Args {
     #[arg(long, default_value = "local", value_enum)]
     storage: StorageKind,
-    #[arg(long, default_value = "/tmp/lsmt-data")]
+    #[arg(long, default_value = "/tmp/cass-data")]
     data_dir: String,
     #[arg(long)]
     bucket: Option<String>,
@@ -92,7 +92,7 @@ async fn main() {
     let url = Url::parse(&args.node_addr).expect("invalid --node-addr");
     let port = url.port().unwrap_or(80);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    println!("LSMT server listening on {addr}");
+    println!("Cass server listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
