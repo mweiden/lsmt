@@ -37,10 +37,12 @@ impl SsTable {
         storage: &S,
     ) -> Result<Self, StorageError> {
         let path = path.into();
+        let mut sorted = entries.to_vec();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
         let mut bloom = BloomFilter::new(1024);
         let mut zone_map = ZoneMap::default();
         let mut data = Vec::new();
-        for (k, v) in entries {
+        for (k, v) in &sorted {
             // update auxiliary structures
             bloom.insert(k);
             zone_map.update(k);
@@ -59,8 +61,11 @@ impl SsTable {
         })
     }
 
-    /// Retrieve a value from the table, consulting bloom filter and zone
-    /// map before scanning the file.
+    /// Retrieve a value from the table.
+    ///
+    /// The bloom filter and zone map are consulted first to avoid unnecessary
+    /// I/O. If they indicate the key may exist, the SSTable is read and a
+    /// binary search over the sorted entries is performed to locate the key.
     pub async fn get<S: Storage + Sync + Send + ?Sized>(
         &self,
         key: &str,
@@ -70,22 +75,42 @@ impl SsTable {
             return Ok(None);
         }
         let raw = storage.get(&self.path).await?;
-        for line in raw.split(|b| *b == NL) {
-            if line.is_empty() {
-                continue;
-            }
-            // locate separator between key and value
-            if let Some(pos) = line.iter().position(|b| *b == SEP) {
-                let (k, v) = line.split_at(pos);
-                if k == key.as_bytes() {
-                    // value bytes are base64 encoded after the separator
-                    let val = STANDARD
-                        .decode(&v[1..])
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                    return Ok(Some(val));
-                }
-            }
+        let lines: Vec<&[u8]> = raw
+            .split(|b| *b == NL)
+            .filter(|line| !line.is_empty())
+            .collect();
+        if let Some(encoded) = Self::binary_search(&lines, key) {
+            let val = STANDARD
+                .decode(encoded)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            return Ok(Some(val));
         }
         Ok(None)
+    }
+
+    /// Perform a binary search over `lines` to find `key`.
+    ///
+    /// Each entry in `lines` must be of the form `key\tvalue` and the slice of
+    /// lines must be sorted by key in ascending order. When the target key is
+    /// found the encoded value slice (the bytes after the separator) is
+    /// returned. If the key is not present `None` is returned.
+    fn binary_search<'a>(lines: &'a [&'a [u8]], key: &str) -> Option<&'a [u8]> {
+        let mut lo = 0;
+        let mut hi = lines.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let line = lines[mid];
+            if let Some(pos) = line.iter().position(|b| *b == SEP) {
+                let key_bytes = &line[..pos];
+                match key_bytes.cmp(key.as_bytes()) {
+                    std::cmp::Ordering::Less => lo = mid + 1,
+                    std::cmp::Ordering::Greater => hi = mid,
+                    std::cmp::Ordering::Equal => return Some(&line[pos + 1..]),
+                }
+            } else {
+                break;
+            }
+        }
+        None
     }
 }
