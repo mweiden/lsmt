@@ -3,7 +3,7 @@ services:
   cass1:
     build: .
     volumes:
-      - ./data1:/data
+      - /tmp/cass-data1:/data
     command:
       - "cass"
       - "--node-addr"
@@ -22,7 +22,7 @@ services:
   cass2:
     build: .
     volumes:
-      - ./data2:/data
+      - /tmp/cass-data2:/data
     command:
       - "cass"
       - "--node-addr"
@@ -41,7 +41,7 @@ services:
   cass3:
     build: .
     volumes:
-      - ./data3:/data
+      - /tmp/cass-data3:/data
     command:
       - "cass"
       - "--node-addr"
