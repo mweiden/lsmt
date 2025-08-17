@@ -1,19 +1,18 @@
 # lsmt
 
-Experimental log-structured merge tree database written in Rust.
+Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apache_Cassandra) written in Rust.
 
 ## Features
 
+- REST API for querying
 - Async storage abstraction with local or S3 backends
 - Sharded write-ahead logs and in-memory tables for parallel ingestion
 - Column-oriented SSTable placeholders with bloom filters and zone maps
-- Basic SQL parsing via [`sqlparser`]
 - Dockerfile and docker-compose for containerized deployment
 
-## Supported Queries
+## Query Syntax
 
-The built-in SQL engine understands a small subset of SQL that is geared
-toward key/value access:
+The built-in SQL engine understands a small subset of SQL:
 
 - `INSERT` of a `key`/`value` pair into a table
 - `UPDATE` and `DELETE` statements targeting a single key
@@ -22,6 +21,21 @@ toward key/value access:
   and `LIMIT`
 - Table management statements such as `CREATE TABLE`, `DROP TABLE` and
   `SHOW TABLES`
+
+Note on creating [partition and clustering keys](https://cassandra.apache.org/doc/4.0/cassandra/data_modeling/intro.html#partitions):
+the first column in `PRIMARY KEY(...)` will be the partition key, subsequent columns will be indexed as clustering keys.
+
+So for the example `id` will be the partition key and `c` will be a clustering key:
+
+```
+CREATE TABLE t (
+   id int,
+   c text,
+   k int,
+   v text,
+   PRIMARY KEY (id,c)
+);
+```
 
 ## Development
 
@@ -74,7 +88,7 @@ storage with a replication factor of two.
 Start the cluster:
 
 ```bash
-docker compose up -d
+docker compose up
 ```
 
 Insert via one node and query from the others:
@@ -82,8 +96,8 @@ Insert via one node and query from the others:
 ```bash
 curl -X POST localhost:8080/query -d "CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))"
 curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
-curl -X POST localhost:8081/query -d "SELECT value FROM kv WHERE key = 'hello'"
-curl -X POST localhost:8082/query -d "SELECT value FROM kv WHERE key = 'hello'"
+curl -X POST localhost:8081/query -d "SELECT value FROM id WHERE key = 'hello'"
+curl -X POST localhost:8082/query -d "SELECT value FROM id WHERE key = 'hello'"
 ```
 
 The project is a scaffold and many components are left for future work.
