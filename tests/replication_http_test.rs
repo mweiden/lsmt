@@ -12,7 +12,7 @@ async fn union_and_lww_across_replicas() {
     let base2 = "http://127.0.0.1:18082";
     let dir1 = tempfile::tempdir().unwrap();
     let dir2 = tempfile::tempdir().unwrap();
-    let bin = env!("CARGO_BIN_EXE_lsmt");
+    let bin = env!("CARGO_BIN_EXE_cass");
 
     let mut child1 = Command::new(bin)
         .args([

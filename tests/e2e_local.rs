@@ -1,4 +1,4 @@
-use lsmt::{
+use cass::{
     Database, SqlEngine,
     storage::{Storage, local::LocalStorage},
 };

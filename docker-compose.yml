@@ -1,17 +1,17 @@
 version: '3.8'
 services:
-  lsmt1:
+  cass1:
     build: .
     volumes:
       - ./data1:/data
     command:
-      - "lsmt"
+      - "cass"
       - "--node-addr"
-      - "http://lsmt1:8080"
+      - "http://cass1:8080"
       - "--peer"
-      - "http://lsmt2:8080"
+      - "http://cass2:8080"
       - "--peer"
-      - "http://lsmt3:8080"
+      - "http://cass3:8080"
       - "--data-dir"
       - "/data"
       - "--rf"
@@ -19,18 +19,18 @@ services:
     ports:
       - "8080:8080"
 
-  lsmt2:
+  cass2:
     build: .
     volumes:
       - ./data2:/data
     command:
-      - "lsmt"
+      - "cass"
       - "--node-addr"
-      - "http://lsmt2:8080"
+      - "http://cass2:8080"
       - "--peer"
-      - "http://lsmt1:8080"
+      - "http://cass1:8080"
       - "--peer"
-      - "http://lsmt3:8080"
+      - "http://cass3:8080"
       - "--data-dir"
       - "/data"
       - "--rf"
@@ -38,18 +38,18 @@ services:
     ports:
       - "8081:8080"
 
-  lsmt3:
+  cass3:
     build: .
     volumes:
       - ./data3:/data
     command:
-      - "lsmt"
+      - "cass"
       - "--node-addr"
-      - "http://lsmt3:8080"
+      - "http://cass3:8080"
       - "--peer"
-      - "http://lsmt1:8080"
+      - "http://cass1:8080"
       - "--peer"
-      - "http://lsmt2:8080"
+      - "http://cass2:8080"
       - "--data-dir"
       - "/data"
       - "--rf"
