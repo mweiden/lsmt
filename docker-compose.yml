@@ -12,10 +12,14 @@ services:
       - "http://cass2:8080"
       - "--peer"
       - "http://cass3:8080"
+      - "--peer"
+      - "http://cass4:8080"
+      - "--peer"
+      - "http://cass5:8080"
       - "--data-dir"
       - "/data"
       - "--rf"
-      - "2"
+      - "3"
     ports:
       - "8080:8080"
 
@@ -31,10 +35,14 @@ services:
       - "http://cass1:8080"
       - "--peer"
       - "http://cass3:8080"
+      - "--peer"
+      - "http://cass4:8080"
+      - "--peer"
+      - "http://cass5:8080"
       - "--data-dir"
       - "/data"
       - "--rf"
-      - "2"
+      - "3"
     ports:
       - "8081:8080"
 
@@ -50,9 +58,60 @@ services:
       - "http://cass1:8080"
       - "--peer"
       - "http://cass2:8080"
+      - "--peer"
+      - "http://cass4:8080"
+      - "--peer"
+      - "http://cass5:8080"
       - "--data-dir"
       - "/data"
       - "--rf"
-      - "2"
+      - "3"
     ports:
       - "8082:8080"
+
+  cass4:
+    build: .
+    volumes:
+      - /tmp/cass-data4:/data
+    command:
+      - "cass"
+      - "--node-addr"
+      - "http://cass4:8080"
+      - "--peer"
+      - "http://cass1:8080"
+      - "--peer"
+      - "http://cass2:8080"
+      - "--peer"
+      - "http://cass3:8080"
+      - "--peer"
+      - "http://cass5:8080"
+      - "--data-dir"
+      - "/data"
+      - "--rf"
+      - "3"
+    ports:
+      - "8083:8080"
+
+  cass5:
+    build: .
+    volumes:
+      - /tmp/cass-data5:/data
+    command:
+      - "cass"
+      - "--node-addr"
+      - "http://cass5:8080"
+      - "--peer"
+      - "http://cass1:8080"
+      - "--peer"
+      - "http://cass2:8080"
+      - "--peer"
+      - "http://cass3:8080"
+      - "--peer"
+      - "http://cass4:8080"
+      - "--data-dir"
+      - "/data"
+      - "--rf"
+      - "3"
+    ports:
+      - "8084:8080"
+

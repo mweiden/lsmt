@@ -11,6 +11,8 @@ Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apach
 - **Durability / Recovery:** Sharded write-ahead logs for durability and in-memory tables for parallel ingestion
 - **Deployment:** Dockerfile and docker-compose for containerized deployment and local testing
 - **Scalability:** Horizontally scalable
+- **Gossip:** Cluster membership and liveness detection via gossip with health checks
+- **Logging:** HTTP requests logged in common log format
 
 Design tradeoffs:
 - **Consistency:** Consistency is relaxed, last-write-wins conflict resolution
@@ -90,8 +92,8 @@ AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... \
 
 ## Example / Docker Compose Cluster
 
-With the server running you can insert and query data over HTTP. The provided `docker-compose.yml` starts a three-node cluster using local
-storage with a replication factor of two where you can try this out.
+With the server running you can insert and query data over HTTP. The provided `docker-compose.yml` starts a five-node cluster using local
+storage with a replication factor of three where you can try this out.
 
 Start the cluster:
 
@@ -107,6 +109,8 @@ curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
 # => {"op":"INSERT","unit":"row","count":1}
 curl -X POST localhost:8081/query -d "SELECT value FROM id WHERE key = 'hello'"
 curl -X POST localhost:8082/query -d "SELECT value FROM id WHERE key = 'hello'"
+curl -X POST localhost:8083/query -d "SELECT value FROM id WHERE key = 'hello'"
+curl -X POST localhost:8084/query -d "SELECT value FROM id WHERE key = 'hello'"
 ```
 
 The project is a scaffold and many components are left for future work.
