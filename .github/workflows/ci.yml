@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "main" ]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,13 +21,19 @@ jobs:
           toolchain: stable
           override: true
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "cass"
+          cache-on-failure: true
       - name: Run tests
         run: cargo test
       - name: Install cargo-tarpaulin
+        if: github.ref == 'refs/heads/main'
         run: cargo install cargo-tarpaulin
       - name: Generate coverage report
+        if: github.ref == 'refs/heads/main'
         run: cargo tarpaulin --out Xml
       - name: Upload coverage reports to Codecov
+        if: github.ref == 'refs/heads/main'
         uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
