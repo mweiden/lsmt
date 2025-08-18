@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'cass'
+    static_configs:
+      - targets:
+          - cass1:8080
+          - cass2:8080
+          - cass3:8080
+          - cass4:8080
+          - cass5:8080

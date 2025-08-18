@@ -116,3 +116,17 @@ curl -X POST localhost:8082/query -d "SELECT value FROM id WHERE key = 'hello'"
 curl -X POST localhost:8083/query -d "SELECT value FROM id WHERE key = 'hello'"
 curl -X POST localhost:8084/query -d "SELECT value FROM id WHERE key = 'hello'"
 ```
+
+## Monitoring
+
+Each node exposes Prometheus metrics at `/metrics`. The provided
+`docker-compose.yml` also starts Prometheus and Grafana. After running
+
+```bash
+docker compose up
+```
+
+visit <http://localhost:3000> and sign in with the default
+`admin`/`admin` credentials. The Grafana instance is preconfigured with the
+Prometheus data source so you can explore metrics such as HTTP request
+counts, peer health, RAM and CPU usage, and SSTable disk usage.
