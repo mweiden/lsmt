@@ -110,11 +110,11 @@ Insert via one node and query from the others:
 curl -X POST localhost:8080/query -d "CREATE TABLE kv (id TEXT, val TEXT, PRIMARY KEY(id))"
 curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
 # => {"op":"INSERT","unit":"row","count":1}
-curl -X POST localhost:8081/query -d "SELECT value FROM id WHERE key = 'hello'"
+curl -X POST localhost:8081/query -d "SELECT val FROM kv WHERE id = 'hello'"
 # You can run the following requests to illustrate that each node proxies requests to the replicas owning the parition key
-curl -X POST localhost:8082/query -d "SELECT value FROM id WHERE key = 'hello'"
-curl -X POST localhost:8083/query -d "SELECT value FROM id WHERE key = 'hello'"
-curl -X POST localhost:8084/query -d "SELECT value FROM id WHERE key = 'hello'"
+curl -X POST localhost:8082/query -d "SELECT val FROM kv WHERE id = 'hello'"
+curl -X POST localhost:8083/query -d "SELECT val FROM kv WHERE id = 'hello'"
+curl -X POST localhost:8084/query -d "SELECT val FROM kv WHERE id = 'hello'"
 ```
 
 ## Monitoring
@@ -130,3 +130,9 @@ visit <http://localhost:3000> and sign in with the default
 `admin`/`admin` credentials. The Grafana instance is preconfigured with the
 Prometheus data source so you can explore metrics such as HTTP request
 counts, peer health, RAM and CPU usage, and SSTable disk usage.
+
+There is also a preconfigured dashboard with basic metrics from all instances. Screenshot below:
+
+<img width="1257" height="821" alt="Screenshot 2025-08-17 at 11 48 28 PM" src="https://github.com/user-attachments/assets/cbaf71aa-c726-4c6a-a1eb-422060aecd0a" />
+
+
