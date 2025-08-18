@@ -111,10 +111,8 @@ curl -X POST localhost:8080/query -d "CREATE TABLE kv (id TEXT, val TEXT, PRIMAR
 curl -X POST localhost:8080/query -d "INSERT INTO kv VALUES ('hello','world')"
 # => {"op":"INSERT","unit":"row","count":1}
 curl -X POST localhost:8081/query -d "SELECT value FROM id WHERE key = 'hello'"
-# subsequent calls are here to illustrate that each node proxies requests to the replicas owning the parition key
+# You can run the following requests to illustrate that each node proxies requests to the replicas owning the parition key
 curl -X POST localhost:8082/query -d "SELECT value FROM id WHERE key = 'hello'"
 curl -X POST localhost:8083/query -d "SELECT value FROM id WHERE key = 'hello'"
 curl -X POST localhost:8084/query -d "SELECT value FROM id WHERE key = 'hello'"
 ```
-
-The project is a scaffold and many components are left for future work.
