@@ -1,8 +1,8 @@
 use super::{Storage, StorageError};
 use async_trait::async_trait;
-use s3::creds::Credentials;
 use s3::Bucket;
 use s3::Region;
+use s3::creds::Credentials;
 use std::io::{Error, ErrorKind};
 
 pub struct S3Storage {
@@ -14,12 +14,11 @@ impl S3Storage {
         let creds = Credentials::from_env().map_err(|e: s3::creds::error::CredentialsError| {
             StorageError::Io(Error::new(ErrorKind::Other, e.to_string()))
         })?;
-        let region: Region = std::env::var("AWS_REGION")
-            .unwrap_or_else(|_| "us-east-1".to_string())
-            .parse::<Region>()
-            .map_err(|e: std::str::Utf8Error| {
+        let region = Region::from_env("AWS_REGION", Some("AWS_ENDPOINT")).map_err(
+            |e: s3::region::error::RegionError| {
                 StorageError::Io(Error::new(ErrorKind::Other, e.to_string()))
-            })?;
+            },
+        )?;
         let bucket = Bucket::new(bucket, region, creds)
             .map_err(|e: s3::error::S3Error| {
                 StorageError::Io(Error::new(ErrorKind::Other, e.to_string()))
@@ -45,6 +44,12 @@ impl Storage for S3Storage {
             .get_object(path)
             .await
             .map_err(|e| StorageError::Io(Error::new(ErrorKind::Other, e.to_string())))?;
+        if resp.status_code() != 200 {
+            return Err(StorageError::Io(Error::new(
+                ErrorKind::Other,
+                format!("status {}", resp.status_code()),
+            )));
+        }
         Ok(resp.bytes().to_vec())
     }
 }
