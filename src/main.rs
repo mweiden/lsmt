@@ -1,13 +1,23 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use axum::{Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Json, Router,
+    body::Body,
+    extract::{ConnectInfo, State},
+    http::{Request, StatusCode, Version},
+    middleware::{self, Next},
+    response::Response,
+    routing::{get, post},
+};
 use cass::{
     Database,
     cluster::Cluster,
     storage::{Storage, local::LocalStorage, s3::S3Storage},
 };
+use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use reqwest::Url;
+use serde_json::Value;
 
 type DynStorage = Arc<dyn Storage>;
 
@@ -88,13 +98,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/query", post(handle_query))
         .route("/internal", post(handle_internal))
-        .with_state(state);
+        .route("/health", get(handle_health))
+        .with_state(state)
+        .layer(middleware::from_fn(common_log));
 
     let url = Url::parse(&args.node_addr)?;
     let port = url.port().unwrap_or(80);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     println!("Cass server listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
+}
+async fn handle_health(State(state): State<AppState>) -> Json<Value> {
+    Json(state.cluster.health_info())
+}
+
+async fn common_log(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let version = match req.version() {
+        Version::HTTP_10 => "HTTP/1.0",
+        Version::HTTP_11 => "HTTP/1.1",
+        Version::HTTP_2 => "HTTP/2.0",
+        Version::HTTP_3 => "HTTP/3.0",
+        _ => "HTTP/?",
+    };
+    let response = next.run(req).await;
+    let status = response.status().as_u16();
+    let length = response
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-");
+    let now = Utc::now().format("%d/%b/%Y:%H:%M:%S %z");
+    println!(
+        "{} - - [{}] \"{} {} {}\" {} {}",
+        addr.ip(),
+        now,
+        method,
+        uri.path(),
+        version,
+        status,
+        length
+    );
+    response
 }

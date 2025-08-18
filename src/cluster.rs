@@ -1,8 +1,8 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io::Cursor,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use futures::future::join_all;
@@ -12,6 +12,7 @@ use reqwest::Client;
 use crate::{Database, SqlEngine, query::QueryError};
 use serde_json::{Value, json};
 use sqlparser::ast::{ObjectType, Statement};
+use tokio::{sync::RwLock, time::sleep};
 
 /// Simple cluster management and request coordination.
 ///
@@ -27,6 +28,7 @@ pub struct Cluster {
     rf: usize,
     client: Client,
     self_addr: String,
+    health: Arc<RwLock<HashMap<String, Instant>>>,
 }
 
 impl Cluster {
@@ -48,12 +50,48 @@ impl Cluster {
                 ring.insert(token, node.clone());
             }
         }
+
+        let client = Client::new();
+        let mut initial = HashMap::new();
+        for p in peers.iter() {
+            if p != &self_addr {
+                initial.insert(p.clone(), Instant::now());
+            }
+        }
+        let health = Arc::new(RwLock::new(initial));
+        let gossip_client = client.clone();
+        let gossip_peers = peers.clone();
+        let gossip_addr = self_addr.clone();
+        let gossip_health = health.clone();
+        tokio::spawn(async move {
+            let mut idx = 0usize;
+            loop {
+                if gossip_peers.is_empty() {
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                idx = (idx + 1) % gossip_peers.len();
+                let peer = &gossip_peers[idx];
+                if peer != &gossip_addr {
+                    if let Ok(resp) = gossip_client.get(format!("{}/health", peer)).send().await {
+                        if resp.status().is_success() {
+                            let _ = resp.bytes().await;
+                            let mut map = gossip_health.write().await;
+                            map.insert(peer.clone(), Instant::now());
+                        }
+                    }
+                }
+                sleep(Duration::from_secs(1)).await;
+            }
+        });
+
         Self {
             db,
             ring,
             rf: rf.max(1),
-            client: Client::new(),
+            client,
             self_addr,
+            health,
         }
     }
 
@@ -78,6 +116,33 @@ impl Cluster {
             }
         }
         reps
+    }
+
+    async fn is_alive(&self, node: &str) -> bool {
+        if node == self.self_addr {
+            return true;
+        }
+        let map = self.health.read().await;
+        map.get(node)
+            .map(|t| t.elapsed() < Duration::from_secs(8))
+            .unwrap_or(false)
+    }
+
+    pub fn health_info(&self) -> Value {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let tokens: Vec<u32> = self
+            .ring
+            .iter()
+            .filter_map(|(tok, node)| (node == &self.self_addr).then_some(*tok))
+            .collect();
+        json!({
+            "node": self.self_addr,
+            "timestamp": now,
+            "tokens": tokens,
+        })
     }
 
     /// Execute `sql` against the appropriate replicas.
@@ -166,6 +231,17 @@ impl Cluster {
             }
         }
 
+        let mut replicas: Vec<String> = replicas.into_iter().collect();
+        let mut healthy: Vec<String> = Vec::new();
+        for node in replicas.drain(..) {
+            if self.is_alive(&node).await {
+                healthy.push(node);
+            }
+        }
+        if !broadcast && healthy.len() < self.rf {
+            return Err(QueryError::Other("not enough healthy replicas".into()));
+        }
+
         // Collect results from all replicas, performing last-write-wins per key.
         let mut rows: BTreeMap<String, (u64, String)> = BTreeMap::new();
         let mut others: BTreeSet<String> = BTreeSet::new();
@@ -173,7 +249,7 @@ impl Cluster {
         let mut row_count: u64 = 0;
 
         let sql_string = sql.to_string();
-        let tasks: Vec<_> = replicas
+        let tasks: Vec<_> = healthy
             .into_iter()
             .map(|node| {
                 let db = self.db.clone();
