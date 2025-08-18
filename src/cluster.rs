@@ -95,7 +95,7 @@ impl Cluster {
         }
     }
 
-    fn replicas_for(&self, key: &str) -> Vec<String> {
+    pub fn replicas_for(&self, key: &str) -> Vec<String> {
         let mut cursor = Cursor::new(key.as_bytes());
         let token = murmur3_32(&mut cursor, 0).unwrap_or(0);
         let mut reps = Vec::new();
@@ -118,7 +118,7 @@ impl Cluster {
         reps
     }
 
-    async fn is_alive(&self, node: &str) -> bool {
+    pub async fn is_alive(&self, node: &str) -> bool {
         if node == self.self_addr {
             return true;
         }
