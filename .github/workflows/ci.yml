@@ -25,6 +25,7 @@ jobs:
           shared-key: "cass"
           cache-on-failure: true
       - name: Run tests
+        if: github.ref != 'refs/heads/main'
         run: cargo test
       - name: Install cargo-tarpaulin
         if: github.ref == 'refs/heads/main'
