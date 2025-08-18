@@ -1,7 +1,7 @@
 # Cass
 [![Test Status](https://github.com/mweiden/cass/actions/workflows/ci.yml/badge.svg)](https://github.com/mweiden/cass/actions/workflows/ci.yml) [![codecov](https://codecov.io/gh/mweiden/cass/branch/main/graph/badge.svg)](https://codecov.io/gh/mweiden/cass)
 
-Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apache_Cassandra) written in Rust. Written mostly via [OpenAI Codex](https://chatgpt.com/codex).
+Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apache_Cassandra) written in Rust, mostly using [OpenAI Codex](https://chatgpt.com/codex).
 
 ## Features
 
@@ -14,7 +14,10 @@ Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apach
 - **Gossip:** Cluster membership and liveness detection via gossip with health checks
 - **Logging:** HTTP requests logged in common log format
 
-Design tradeoffs:
+## Design tradeoffs
+
+Like Cassandra itself, `cass` is an AP system:
+
 - **Consistency:** Consistency is relaxed, last-write-wins conflict resolution
 - **Availability:** always writable, tunably consistent, fault-tolerant through replication
 - **Partition tolerance:** will continue to work even if parts of the cluster cannot communicate
