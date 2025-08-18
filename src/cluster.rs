@@ -128,6 +128,13 @@ impl Cluster {
             .unwrap_or(false)
     }
 
+    pub async fn peer_health(&self) -> Vec<(String, bool)> {
+        let map = self.health.read().await;
+        map.iter()
+            .map(|(peer, t)| (peer.clone(), t.elapsed() < Duration::from_secs(8)))
+            .collect()
+    }
+
     pub fn health_info(&self) -> Value {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
