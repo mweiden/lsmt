@@ -16,7 +16,7 @@ Toy/experimental clone of [Apache Cassandra](https://en.wikipedia.org/wiki/Apach
 
 ## Design tradeoffs
 
-Like Cassandra itself, `cass` is an AP system:
+Like Cassandra itself, `cass` is an [AP system](https://en.wikipedia.org/wiki/CAP_theorem):
 
 - **Consistency:** Consistency is relaxed, last-write-wins conflict resolution
 - **Availability:** always writable, tunably consistent, fault-tolerant through replication
