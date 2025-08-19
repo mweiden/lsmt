@@ -46,3 +46,27 @@ async fn health_info_reports_tokens() {
     assert_eq!(info["tokens"].as_array().unwrap().len(), 3);
     assert!(info["timestamp"].as_u64().is_some());
 }
+
+#[tokio::test]
+async fn flip_health_toggles_self() {
+    let self_addr = "http://127.0.0.1:4000".to_string();
+    let cluster = build_cluster(Vec::new(), 1, 1, &self_addr).await;
+    assert!(cluster.is_alive(&self_addr).await);
+    assert!(!cluster.flip_health().await);
+    assert!(!cluster.is_alive(&self_addr).await);
+    assert!(cluster.flip_health().await);
+    assert!(cluster.is_alive(&self_addr).await);
+}
+
+#[tokio::test]
+async fn flush_all_flushes_memtable() {
+    let dir = tempdir().unwrap();
+    let storage = Arc::new(LocalStorage::new(dir.path()));
+    let db = Arc::new(Database::new(storage, "wal.log").await.unwrap());
+    let self_addr = "http://127.0.0.1:5000".to_string();
+    let cluster = Cluster::new(db.clone(), self_addr, Vec::new(), 1, 1);
+    db.insert("k".into(), b"v".to_vec()).await;
+    assert_eq!(db.memtable().len().await, 1);
+    cluster.flush_all().await.unwrap();
+    assert_eq!(db.memtable().len().await, 0);
+}

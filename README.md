@@ -117,6 +117,16 @@ curl -X POST localhost:8083/query -d "SELECT val FROM kv WHERE id = 'hello'"
 curl -X POST localhost:8084/query -d "SELECT val FROM kv WHERE id = 'hello'"
 ```
 
+## Maintenance Endpoints
+
+The server exposes a couple of helper endpoints useful during testing:
+
+- `POST /flush` instructs every node in the cluster to flush its in-memory
+  memtable to an on-disk SSTable.
+- `POST /flip` toggles the health status of the node receiving the request,
+  switching it between healthy and unhealthy. The node's `node_health`
+  Prometheus gauge reports `1` when healthy and `0` when unhealthy.
+
 ## Monitoring
 
 Each node exposes Prometheus metrics at `/metrics`. The provided
