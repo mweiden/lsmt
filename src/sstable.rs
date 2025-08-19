@@ -8,6 +8,14 @@ use base64::engine::general_purpose::STANDARD;
 const SEP: u8 = b'\t';
 const NL: u8 = b'\n';
 
+fn meta_path(path: &str) -> String {
+    if let Some(base) = path.strip_suffix(".tbl") {
+        format!("{}.meta", base)
+    } else {
+        format!("{}.meta", path)
+    }
+}
+
 /// Simplified on-disk sorted string table used for persisting flushed
 /// memtable data.
 pub struct SsTable {
@@ -54,6 +62,15 @@ impl SsTable {
             data.push(NL);
         }
         storage.put(&path, data).await?;
+        let meta_path = meta_path(&path);
+        let bloom_bytes = bloom.to_bytes();
+        let zone_bytes = zone_map.to_bytes();
+        let mut meta = Vec::new();
+        meta.extend_from_slice(&(bloom_bytes.len() as u32).to_be_bytes());
+        meta.extend_from_slice(&bloom_bytes);
+        meta.extend_from_slice(&(zone_bytes.len() as u32).to_be_bytes());
+        meta.extend_from_slice(&zone_bytes);
+        storage.put(&meta_path, meta).await?;
         Ok(Self {
             path,
             bloom,
@@ -67,22 +84,39 @@ impl SsTable {
         storage: &S,
     ) -> Result<Self, StorageError> {
         let path = path.into();
-        let raw = storage.get(&path).await?;
-        let mut bloom = BloomFilter::new(1024);
-        let mut zone_map = ZoneMap::default();
-        for line in raw.split(|b| *b == NL).filter(|l| !l.is_empty()) {
-            if let Some(pos) = line.iter().position(|b| *b == SEP) {
-                let key = std::str::from_utf8(&line[..pos])
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                bloom.insert(key);
-                zone_map.update(key);
+        let meta_path = meta_path(&path);
+        if let Ok(meta) = storage.get(&meta_path).await {
+            let mut off = 0;
+            let b_len = u32::from_be_bytes(meta[off..off + 4].try_into().unwrap()) as usize;
+            off += 4;
+            let bloom = BloomFilter::from_bytes(&meta[off..off + b_len]);
+            off += b_len;
+            let z_len = u32::from_be_bytes(meta[off..off + 4].try_into().unwrap()) as usize;
+            off += 4;
+            let zone_map = ZoneMap::from_bytes(&meta[off..off + z_len]);
+            Ok(Self {
+                path,
+                bloom,
+                zone_map,
+            })
+        } else {
+            let raw = storage.get(&path).await?;
+            let mut bloom = BloomFilter::new(1024);
+            let mut zone_map = ZoneMap::default();
+            for line in raw.split(|b| *b == NL).filter(|l| !l.is_empty()) {
+                if let Some(pos) = line.iter().position(|b| *b == SEP) {
+                    let key = std::str::from_utf8(&line[..pos])
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                    bloom.insert(key);
+                    zone_map.update(key);
+                }
             }
+            Ok(Self {
+                path,
+                bloom,
+                zone_map,
+            })
         }
-        Ok(Self {
-            path,
-            bloom,
-            zone_map,
-        })
     }
 
     /// Retrieve a value from the table.

@@ -8,7 +8,9 @@ pub struct BloomFilter {
 impl BloomFilter {
     /// Create a new filter with `size` bits.
     pub fn new(size: usize) -> Self {
-        Self { bits: vec![false; size] }
+        Self {
+            bits: vec![false; size],
+        }
     }
 
     /// Compute two simple hash values for `item` using a pair of
@@ -38,7 +40,19 @@ impl BloomFilter {
     /// False positives are possible but false negatives are not.
     pub fn may_contain(&self, item: &str) -> bool {
         let (a, b) = self.hashes(item);
-        self.bits.get(a).copied().unwrap_or(false)
-            && self.bits.get(b).copied().unwrap_or(false)
+        self.bits.get(a).copied().unwrap_or(false) && self.bits.get(b).copied().unwrap_or(false)
+    }
+
+    /// Serialize the bloom filter into a compact byte vector.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        self.bits.iter().map(|b| *b as u8).collect()
+    }
+
+    /// Reconstruct a bloom filter from a byte slice produced by
+    /// [`to_bytes`].
+    pub fn from_bytes(data: &[u8]) -> Self {
+        Self {
+            bits: data.iter().map(|b| *b != 0).collect(),
+        }
     }
 }
