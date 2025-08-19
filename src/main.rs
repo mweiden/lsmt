@@ -116,6 +116,12 @@ async fn handle_internal(State(state): State<AppState>, body: String) -> (Status
 
 async fn handle_flip(State(state): State<AppState>) -> Json<Value> {
     let healthy = state.cluster.flip_health().await;
+    let addr = state.cluster.self_addr();
+    state
+        .metrics
+        .health
+        .with_label_values(&[addr])
+        .set(if healthy { 1 } else { 0 });
     Json(json!({ "healthy": healthy }))
 }
 
@@ -205,6 +211,13 @@ async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
             .with_label_values(&[&peer])
             .set(if alive { 1 } else { 0 });
     }
+    let self_addr = state.cluster.self_addr();
+    let self_alive = state.cluster.self_healthy().await;
+    state
+        .metrics
+        .health
+        .with_label_values(&[self_addr])
+        .set(if self_alive { 1 } else { 0 });
 
     let mut sys = System::new_all();
     sys.refresh_memory();

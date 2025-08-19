@@ -167,6 +167,11 @@ impl Cluster {
         *self.self_health.read().await
     }
 
+    /// Return the address of this node.
+    pub fn self_addr(&self) -> &str {
+        &self.self_addr
+    }
+
     /// Flush the local memtable to disk.
     pub async fn flush_self(&self) -> Result<(), StorageError> {
         self.db.flush().await
