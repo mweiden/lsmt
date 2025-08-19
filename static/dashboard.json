@@ -613,7 +613,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 10,
+        "h": 11,
         "w": 24,
         "x": 0,
         "y": 14
@@ -622,6 +622,7 @@
       "options": {
         "calculate": false,
         "cellGap": 1,
+        "cellValues": {},
         "color": {
           "exponent": 0.5,
           "fill": "dark-orange",
@@ -637,7 +638,7 @@
           "color": "rgba(255,0,255,0.7)"
         },
         "filterValues": {
-          "le": 1e-9
+          "le": -1
         },
         "legend": {
           "show": true
@@ -659,7 +660,7 @@
       "targets": [
         {
           "editorMode": "builder",
-          "expr": "node_health",
+          "expr": "sum by(instance, peer) (node_health)",
           "legendFormat": "{{instance}}",
           "range": true,
           "refId": "A"
@@ -684,5 +685,5 @@
   "timezone": "browser",
   "title": "Cass",
   "uid": "0b04c060-f0f1-444d-843d-d416074e6d2f",
-  "version": 16
+  "version": 1
 }
