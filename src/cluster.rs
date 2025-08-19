@@ -9,7 +9,7 @@ use futures::future::join_all;
 use murmur3::murmur3_32;
 use reqwest::Client;
 
-use crate::{Database, SqlEngine, query::QueryError};
+use crate::{Database, SqlEngine, query::QueryError, storage::StorageError};
 use serde_json::{Value, json};
 use sqlparser::ast::{ObjectType, Statement};
 use tokio::{sync::RwLock, time::sleep};
@@ -29,6 +29,7 @@ pub struct Cluster {
     client: Client,
     self_addr: String,
     health: Arc<RwLock<HashMap<String, Instant>>>,
+    self_health: Arc<RwLock<bool>>,
 }
 
 impl Cluster {
@@ -59,6 +60,7 @@ impl Cluster {
             }
         }
         let health = Arc::new(RwLock::new(initial));
+        let self_health = Arc::new(RwLock::new(true));
         let gossip_client = client.clone();
         let gossip_peers = peers.clone();
         let gossip_addr = self_addr.clone();
@@ -92,6 +94,7 @@ impl Cluster {
             client,
             self_addr,
             health,
+            self_health,
         }
     }
 
@@ -120,7 +123,7 @@ impl Cluster {
 
     pub async fn is_alive(&self, node: &str) -> bool {
         if node == self.self_addr {
-            return true;
+            return *self.self_health.read().await;
         }
         let map = self.health.read().await;
         map.get(node)
@@ -150,6 +153,63 @@ impl Cluster {
             "timestamp": now,
             "tokens": tokens,
         })
+    }
+
+    /// Toggle the health status of this node and return the new state.
+    pub async fn flip_health(&self) -> bool {
+        let mut healthy = self.self_health.write().await;
+        *healthy = !*healthy;
+        *healthy
+    }
+
+    /// Return whether this node is currently healthy.
+    pub async fn self_healthy(&self) -> bool {
+        *self.self_health.read().await
+    }
+
+    /// Flush the local memtable to disk.
+    pub async fn flush_self(&self) -> Result<(), StorageError> {
+        self.db.flush().await
+    }
+
+    /// Flush memtables on all nodes in the cluster.
+    pub async fn flush_all(&self) -> Result<(), String> {
+        let nodes: HashSet<String> = self.ring.values().cloned().collect();
+        let tasks: Vec<_> = nodes
+            .into_iter()
+            .map(|node| {
+                let client = self.client.clone();
+                let self_addr = self.self_addr.clone();
+                let db = self.db.clone();
+                async move {
+                    if node == self_addr {
+                        db.flush().await.map_err(|e| e.to_string())
+                    } else {
+                        let resp = client
+                            .post(format!("{}/flush_internal", node))
+                            .send()
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        if resp.status().is_success() {
+                            Ok(())
+                        } else {
+                            Err(format!("status {}", resp.status()))
+                        }
+                    }
+                }
+            })
+            .collect();
+        let mut last_err = None;
+        for res in join_all(tasks).await {
+            if let Err(e) = res {
+                last_err = Some(e);
+            }
+        }
+        if let Some(e) = last_err {
+            Err(e)
+        } else {
+            Ok(())
+        }
     }
 
     /// Execute `sql` against the appropriate replicas.

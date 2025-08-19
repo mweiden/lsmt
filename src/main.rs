@@ -21,7 +21,7 @@ use prometheus::{
     register_histogram_vec, register_int_counter_vec, register_int_gauge_vec,
 };
 use reqwest::Url;
-use serde_json::Value;
+use serde_json::{Value, json};
 use sysinfo::System;
 
 type DynStorage = Arc<dyn Storage>;
@@ -114,6 +114,25 @@ async fn handle_internal(State(state): State<AppState>, body: String) -> (Status
     }
 }
 
+async fn handle_flip(State(state): State<AppState>) -> Json<Value> {
+    let healthy = state.cluster.flip_health().await;
+    Json(json!({ "healthy": healthy }))
+}
+
+async fn handle_flush(State(state): State<AppState>) -> (StatusCode, String) {
+    match state.cluster.flush_all().await {
+        Ok(_) => (StatusCode::OK, String::new()),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+async fn handle_flush_internal(State(state): State<AppState>) -> (StatusCode, String) {
+    match state.cluster.flush_self().await {
+        Ok(_) => (StatusCode::OK, String::new()),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
 /// Start an HTTP server exposing the database at `/query`.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -150,6 +169,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/query", post(handle_query))
         .route("/internal", post(handle_internal))
         .route("/health", get(handle_health))
+        .route("/flush", post(handle_flush))
+        .route("/flush_internal", post(handle_flush_internal))
+        .route("/flip", post(handle_flip))
         .route("/metrics", get(handle_metrics))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, common_log));
@@ -166,8 +188,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     Ok(())
 }
-async fn handle_health(State(state): State<AppState>) -> Json<Value> {
-    Json(state.cluster.health_info())
+async fn handle_health(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    let status = if state.cluster.self_healthy().await {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(state.cluster.health_info()))
 }
 
 async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
