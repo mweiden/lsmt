@@ -52,4 +52,19 @@ impl Storage for S3Storage {
         }
         Ok(resp.bytes().to_vec())
     }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
+        let results = self
+            .bucket
+            .list(prefix.to_string(), None)
+            .await
+            .map_err(|e| StorageError::Io(Error::new(ErrorKind::Other, e.to_string())))?;
+        let mut out = Vec::new();
+        for res in results {
+            for obj in res.contents {
+                out.push(obj.key);
+            }
+        }
+        Ok(out)
+    }
 }

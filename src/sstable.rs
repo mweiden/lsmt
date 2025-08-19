@@ -61,6 +61,30 @@ impl SsTable {
         })
     }
 
+    /// Load an existing table from storage rebuilding auxiliary metadata.
+    pub async fn load<S: Storage + Sync + Send + ?Sized>(
+        path: impl Into<String>,
+        storage: &S,
+    ) -> Result<Self, StorageError> {
+        let path = path.into();
+        let raw = storage.get(&path).await?;
+        let mut bloom = BloomFilter::new(1024);
+        let mut zone_map = ZoneMap::default();
+        for line in raw.split(|b| *b == NL).filter(|l| !l.is_empty()) {
+            if let Some(pos) = line.iter().position(|b| *b == SEP) {
+                let key = std::str::from_utf8(&line[..pos])
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                bloom.insert(key);
+                zone_map.update(key);
+            }
+        }
+        Ok(Self {
+            path,
+            bloom,
+            zone_map,
+        })
+    }
+
     /// Retrieve a value from the table.
     ///
     /// The bloom filter and zone map are consulted first to avoid unnecessary

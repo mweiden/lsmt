@@ -37,13 +37,40 @@ impl Database {
         for (k, v) in entries {
             memtable.insert(k, v).await;
         }
+        let files = storage.list("sstable_").await.map_err(|e| match e {
+            storage::StorageError::Io(e) => e,
+            _ => std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+        })?;
+        let mut pairs = Vec::new();
+        let mut next_id = 0usize;
+        for f in files {
+            if let Some(id_str) = f
+                .strip_prefix("sstable_")
+                .and_then(|s| s.strip_suffix(".tbl"))
+            {
+                if let Ok(id) = id_str.parse::<usize>() {
+                    let table = sstable::SsTable::load(&f, storage.as_ref()).await.map_err(
+                        |e| match e {
+                            storage::StorageError::Io(e) => e,
+                            _ => std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                        },
+                    )?;
+                    if id >= next_id {
+                        next_id = id + 1;
+                    }
+                    pairs.push((id, table));
+                }
+            }
+        }
+        pairs.sort_by_key(|(id, _)| *id);
+        let sstables = pairs.into_iter().map(|(_, t)| t).collect();
         Ok(Self {
             storage,
             memtable,
-            sstables: tokio::sync::RwLock::new(Vec::new()),
+            sstables: tokio::sync::RwLock::new(sstables),
             // default threshold before automatically flushing to disk
             max_memtable_size: 1024,
-            next_id: std::sync::atomic::AtomicUsize::new(0),
+            next_id: std::sync::atomic::AtomicUsize::new(next_id),
             wal,
         })
     }

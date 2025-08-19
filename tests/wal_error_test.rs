@@ -18,6 +18,10 @@ impl Storage for BadStorage {
         // return invalid WAL data to trigger a parse error
         Ok(b"bad\t@@\n".to_vec())
     }
+
+    async fn list(&self, _prefix: &str) -> Result<Vec<String>, StorageError> {
+        Ok(Vec::new())
+    }
 }
 
 #[tokio::test]
