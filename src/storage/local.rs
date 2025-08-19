@@ -27,4 +27,20 @@ impl Storage for LocalStorage {
         let p = self.root.join(path);
         Ok(tokio::fs::read(p).await?)
     }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, StorageError> {
+        let mut out = Vec::new();
+        if !tokio::fs::try_exists(&self.root).await? {
+            return Ok(out);
+        }
+        let mut dir = tokio::fs::read_dir(&self.root).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let name = entry.file_name();
+            let name = name.to_string_lossy().to_string();
+            if name.starts_with(prefix) {
+                out.push(name);
+            }
+        }
+        Ok(out)
+    }
 }
