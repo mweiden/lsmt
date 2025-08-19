@@ -244,16 +244,22 @@ async fn common_log(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-");
     let now = Utc::now().format("%d/%b/%Y:%H:%M:%S %z");
-    println!(
-        "{} - - [{}] \"{} {} {}\" {} {}",
-        addr.ip(),
-        now,
-        method,
-        uri.path(),
-        version,
-        status,
-        length
-    );
+    // Write the log line atomically so concurrent requests don't interleave
+    // and produce stray blank lines in aggregated logs.
+    {
+        use std::io::{self, Write};
+        let line = format!(
+            "{} - - [{}] \"{} {} {}\" {} {}\n",
+            addr.ip(),
+            now,
+            method,
+            uri.path(),
+            version,
+            status,
+            length
+        );
+        let _ = io::stdout().write_all(line.as_bytes());
+    }
     let status_str = status.to_string();
     let path = uri.path().to_string();
     let elapsed = start.elapsed().as_secs_f64();
