@@ -315,6 +315,7 @@ dependencies = [
  "clap",
  "futures",
  "hyper-util",
+ "libc",
  "murmur3",
  "prometheus",
  "reqwest 0.11.27",
