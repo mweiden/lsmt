@@ -12,6 +12,7 @@ use reqwest::Client;
 use crate::{Database, SqlEngine, query::QueryError, storage::StorageError};
 use serde_json::{Value, json};
 use sqlparser::ast::{ObjectType, Statement};
+use sysinfo::Disks;
 use tokio::{sync::RwLock, time::sleep};
 
 /// Simple cluster management and request coordination.
@@ -29,7 +30,7 @@ pub struct Cluster {
     client: Client,
     self_addr: String,
     health: Arc<RwLock<HashMap<String, Instant>>>,
-    self_health: Arc<RwLock<bool>>,
+    panic_until: Arc<RwLock<Option<Instant>>>,
 }
 
 impl Cluster {
@@ -60,7 +61,7 @@ impl Cluster {
             }
         }
         let health = Arc::new(RwLock::new(initial));
-        let self_health = Arc::new(RwLock::new(true));
+        let panic_until = Arc::new(RwLock::new(None));
         let gossip_client = client.clone();
         let gossip_peers = peers.clone();
         let gossip_addr = self_addr.clone();
@@ -94,7 +95,7 @@ impl Cluster {
             client,
             self_addr,
             health,
-            self_health,
+            panic_until,
         }
     }
 
@@ -123,7 +124,7 @@ impl Cluster {
 
     pub async fn is_alive(&self, node: &str) -> bool {
         if node == self.self_addr {
-            return *self.self_health.read().await;
+            return self.self_healthy().await;
         }
         let map = self.health.read().await;
         map.get(node)
@@ -155,16 +156,39 @@ impl Cluster {
         })
     }
 
-    /// Toggle the health status of this node and return the new state.
-    pub async fn flip_health(&self) -> bool {
-        let mut healthy = self.self_health.write().await;
-        *healthy = !*healthy;
-        *healthy
+    /// Artificially mark this node unhealthy for the provided duration.
+    pub async fn panic_for(&self, dur: Duration) {
+        let mut until = self.panic_until.write().await;
+        *until = Some(Instant::now() + dur);
     }
 
     /// Return whether this node is currently healthy.
+    ///
+    /// A node is considered unhealthy if it is within a panic window
+    /// or if its local storage has less than 5% free space remaining.
     pub async fn self_healthy(&self) -> bool {
-        *self.self_health.read().await
+        if let Some(until) = *self.panic_until.read().await {
+            if Instant::now() < until {
+                return false;
+            }
+        }
+
+        if let Some(path) = self.db.storage().local_path() {
+            let mut disks = Disks::new_with_refreshed_list();
+            disks.refresh();
+            if let Some(disk) = disks
+                .list()
+                .iter()
+                .find(|d| path.starts_with(d.mount_point()))
+            {
+                let total = disk.total_space() as f64;
+                let avail = disk.available_space() as f64;
+                if total > 0.0 && avail / total < 0.05 {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// Return the address of this node.

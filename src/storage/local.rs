@@ -1,6 +1,6 @@
 use super::{Storage, StorageError};
 use async_trait::async_trait;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct LocalStorage {
     root: PathBuf,
@@ -26,5 +26,9 @@ impl Storage for LocalStorage {
     async fn get(&self, path: &str) -> Result<Vec<u8>, StorageError> {
         let p = self.root.join(path);
         Ok(tokio::fs::read(p).await?)
+    }
+
+    fn local_path(&self) -> Option<&Path> {
+        Some(&self.root)
     }
 }

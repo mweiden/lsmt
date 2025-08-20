@@ -123,9 +123,11 @@ The server exposes a couple of helper endpoints useful during testing:
 
 - `POST /flush` instructs every node in the cluster to flush its in-memory
   memtable to an on-disk SSTable.
-- `POST /flip` toggles the health status of the node receiving the request,
-  switching it between healthy and unhealthy. The node's `node_health`
-  Prometheus gauge reports `1` when healthy and `0` when unhealthy.
+- `POST /panic` forces the node receiving the request to report itself as
+  unhealthy for 60 seconds. Outside of panic mode a node is considered
+  unhealthy when its local storage has less than 5% free space remaining.
+  The `node_health` Prometheus gauge exposes the current status (`1` for
+  healthy, `0` for unhealthy).
 
 ## Monitoring
 
