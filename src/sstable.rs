@@ -1,12 +1,21 @@
-use crate::bloom::BloomFilter;
+use crate::bloom::{BloomFilter, BloomProto};
 use crate::storage::{Storage, StorageError};
-use crate::zonemap::ZoneMap;
+use crate::zonemap::{ZoneMap, ZoneMapProto};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use prost::Message;
 
 // field delimiters within on-disk table files
 const SEP: u8 = b'\t';
 const NL: u8 = b'\n';
+
+fn meta_path(path: &str) -> String {
+    if let Some(base) = path.strip_suffix(".tbl") {
+        format!("{}.meta", base)
+    } else {
+        format!("{}.meta", path)
+    }
+}
 
 /// Simplified on-disk sorted string table used for persisting flushed
 /// memtable data.
@@ -17,6 +26,14 @@ pub struct SsTable {
     pub bloom: BloomFilter,
     /// Zone map storing min/max keys for coarse filtering.
     pub zone_map: ZoneMap,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct TableMeta {
+    #[prost(message, optional, tag = "1")]
+    bloom: Option<BloomProto>,
+    #[prost(message, optional, tag = "2")]
+    zone_map: Option<ZoneMapProto>,
 }
 
 impl SsTable {
@@ -54,6 +71,53 @@ impl SsTable {
             data.push(NL);
         }
         storage.put(&path, data).await?;
+        let meta_path = meta_path(&path);
+        let meta = TableMeta {
+            bloom: Some(bloom.to_proto()),
+            zone_map: Some(zone_map.to_proto()),
+        };
+        let mut buf = Vec::new();
+        meta.encode(&mut buf).unwrap();
+        storage.put(&meta_path, buf).await?;
+        Ok(Self {
+            path,
+            bloom,
+            zone_map,
+        })
+    }
+
+    /// Load an existing table from storage rebuilding auxiliary metadata.
+    pub async fn load<S: Storage + Sync + Send + ?Sized>(
+        path: impl Into<String>,
+        storage: &S,
+    ) -> Result<Self, StorageError> {
+        let path = path.into();
+        let meta_path = meta_path(&path);
+        if let Ok(bytes) = storage.get(&meta_path).await {
+            if let Ok(meta) = TableMeta::decode(bytes.as_ref()) {
+                let bloom = meta
+                    .bloom
+                    .map(BloomFilter::from_proto)
+                    .unwrap_or_else(|| BloomFilter::new(1024));
+                let zone_map = meta.zone_map.map(ZoneMap::from_proto).unwrap_or_default();
+                return Ok(Self {
+                    path,
+                    bloom,
+                    zone_map,
+                });
+            }
+        }
+        let raw = storage.get(&path).await?;
+        let mut bloom = BloomFilter::new(1024);
+        let mut zone_map = ZoneMap::default();
+        for line in raw.split(|b| *b == NL).filter(|l| !l.is_empty()) {
+            if let Some(pos) = line.iter().position(|b| *b == SEP) {
+                let key = std::str::from_utf8(&line[..pos])
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                bloom.insert(key);
+                zone_map.update(key);
+            }
+        }
         Ok(Self {
             path,
             bloom,
