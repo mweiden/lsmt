@@ -48,13 +48,13 @@ async fn health_info_reports_tokens() {
 }
 
 #[tokio::test]
-async fn flip_health_toggles_self() {
+async fn panic_makes_self_unhealthy_temporarily() {
     let self_addr = "http://127.0.0.1:4000".to_string();
     let cluster = build_cluster(Vec::new(), 1, 1, &self_addr).await;
     assert!(cluster.is_alive(&self_addr).await);
-    assert!(!cluster.flip_health().await);
+    cluster.panic_for(Duration::from_secs(1)).await;
     assert!(!cluster.is_alive(&self_addr).await);
-    assert!(cluster.flip_health().await);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
     assert!(cluster.is_alive(&self_addr).await);
 }
 

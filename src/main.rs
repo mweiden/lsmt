@@ -1,4 +1,10 @@
-use std::{fs, net::SocketAddr, path::Path, sync::Arc, time::Instant};
+use std::{
+    fs,
+    net::SocketAddr,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     Json, Router,
@@ -114,8 +120,9 @@ async fn handle_internal(State(state): State<AppState>, body: String) -> (Status
     }
 }
 
-async fn handle_flip(State(state): State<AppState>) -> Json<Value> {
-    let healthy = state.cluster.flip_health().await;
+async fn handle_panic(State(state): State<AppState>) -> Json<Value> {
+    state.cluster.panic_for(Duration::from_secs(60)).await;
+    let healthy = state.cluster.self_healthy().await;
     let addr = state.cluster.self_addr();
     state
         .metrics
@@ -177,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/health", get(handle_health))
         .route("/flush", post(handle_flush))
         .route("/flush_internal", post(handle_flush_internal))
-        .route("/flip", post(handle_flip))
+        .route("/panic", post(handle_panic))
         .route("/metrics", get(handle_metrics))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, common_log));
