@@ -30,3 +30,4 @@ hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
 
 [build-dependencies]
 tonic-build = "0.12"
+protoc-bin-vendored = "3"
