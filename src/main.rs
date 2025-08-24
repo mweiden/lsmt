@@ -14,6 +14,7 @@ use cass::{
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use hyper::{
     Body as HttpBody, Request as HttpRequest, Response as HttpResponse, Server as HyperServer,
+    header::{CONTENT_TYPE, HeaderValue},
     service::{make_service_fn, service_fn},
 };
 use serde_json::Value;
@@ -182,7 +183,14 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
         let make_svc = make_service_fn(|_| async {
             Ok::<_, Infallible>(service_fn(|_req: HttpRequest<HttpBody>| async {
                 let body = metrics::encode_to_string().unwrap_or_default();
-                Ok::<_, Infallible>(HttpResponse::new(HttpBody::from(body)))
+                let response = HttpResponse::builder()
+                    .header(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static("text/plain; version=0.0.4"),
+                    )
+                    .body(HttpBody::from(body))
+                    .unwrap();
+                Ok::<_, Infallible>(response)
             }))
         });
 
