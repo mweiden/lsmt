@@ -5,9 +5,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use crate::rpc::{FlushRequest, HealthRequest, QueryRequest, cass_client::CassClient};
 use futures::future::join_all;
 use murmur3::murmur3_32;
-use reqwest::Client;
+use tonic::Request;
 
 use crate::{Database, SqlEngine, query::QueryError, storage::StorageError};
 use serde_json::{Value, json};
@@ -27,7 +28,6 @@ pub struct Cluster {
     db: Arc<Database>,
     ring: BTreeMap<u32, String>,
     rf: usize,
-    client: Client,
     self_addr: String,
     health: Arc<RwLock<HashMap<String, Instant>>>,
     panic_until: Arc<RwLock<Option<Instant>>>,
@@ -53,7 +53,6 @@ impl Cluster {
             }
         }
 
-        let client = Client::new();
         let mut initial = HashMap::new();
         for p in peers.iter() {
             if p != &self_addr {
@@ -62,7 +61,6 @@ impl Cluster {
         }
         let health = Arc::new(RwLock::new(initial));
         let panic_until = Arc::new(RwLock::new(None));
-        let gossip_client = client.clone();
         let gossip_peers = peers.clone();
         let gossip_addr = self_addr.clone();
         let gossip_health = health.clone();
@@ -76,9 +74,8 @@ impl Cluster {
                 idx = (idx + 1) % gossip_peers.len();
                 let peer = &gossip_peers[idx];
                 if peer != &gossip_addr {
-                    if let Ok(resp) = gossip_client.get(format!("{}/health", peer)).send().await {
-                        if resp.status().is_success() {
-                            let _ = resp.bytes().await;
+                    if let Ok(mut client) = CassClient::connect(peer.clone()).await {
+                        if client.health(Request::new(HealthRequest {})).await.is_ok() {
                             let mut map = gossip_health.write().await;
                             map.insert(peer.clone(), Instant::now());
                         }
@@ -92,7 +89,6 @@ impl Cluster {
             db,
             ring,
             rf: rf.max(1),
-            client,
             self_addr,
             health,
             panic_until,
@@ -207,22 +203,19 @@ impl Cluster {
         let tasks: Vec<_> = nodes
             .into_iter()
             .map(|node| {
-                let client = self.client.clone();
                 let self_addr = self.self_addr.clone();
                 let db = self.db.clone();
                 async move {
                     if node == self_addr {
                         db.flush().await.map_err(|e| e.to_string())
                     } else {
-                        let resp = client
-                            .post(format!("{}/flush_internal", node))
-                            .send()
-                            .await
-                            .map_err(|e| e.to_string())?;
-                        if resp.status().is_success() {
-                            Ok(())
-                        } else {
-                            Err(format!("status {}", resp.status()))
+                        match CassClient::connect(node.clone()).await {
+                            Ok(mut client) => client
+                                .flush_internal(Request::new(FlushRequest {}))
+                                .await
+                                .map(|_| ())
+                                .map_err(|e| e.to_string()),
+                            Err(e) => Err(e.to_string()),
                         }
                     }
                 }
@@ -349,7 +342,6 @@ impl Cluster {
             .into_iter()
             .map(|node| {
                 let db = self.db.clone();
-                let client = self.client.clone();
                 let self_addr = self.self_addr.clone();
                 let sql_clone = sql_string.clone();
                 async move {
@@ -362,26 +354,21 @@ impl Cluster {
                         let engine = SqlEngine::new();
                         engine.execute_with_ts(&db, &sql_clone, ts, true).await
                     } else {
-                        let resp = client
-                            .post(format!("{}/internal", node))
-                            .body(payload)
-                            .send()
-                            .await;
-                        match resp {
-                            Ok(resp) => {
-                                if resp.status().is_success() {
-                                    match resp.bytes().await {
-                                        Ok(bytes) => {
-                                            if bytes.is_empty() {
-                                                Ok(None)
-                                            } else {
-                                                Ok(Some(bytes.to_vec()))
-                                            }
+                        match CassClient::connect(node.clone()).await {
+                            Ok(mut client) => {
+                                match client
+                                    .internal(Request::new(QueryRequest { sql: payload }))
+                                    .await
+                                {
+                                    Ok(resp) => {
+                                        let bytes = resp.into_inner().result;
+                                        if bytes.is_empty() {
+                                            Ok(None)
+                                        } else {
+                                            Ok(Some(bytes))
                                         }
-                                        Err(e) => Err(QueryError::Other(e.to_string())),
                                     }
-                                } else {
-                                    Err(QueryError::Other(format!("status {}", resp.status())))
+                                    Err(e) => Err(QueryError::Other(e.to_string())),
                                 }
                             }
                             Err(e) => Err(QueryError::Other(e.to_string())),

@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package cass;
+
+service Cass {
+  rpc Query (QueryRequest) returns (QueryResponse);
+  rpc Internal (QueryRequest) returns (QueryResponse);
+  rpc Flush (FlushRequest) returns (FlushResponse);
+  rpc FlushInternal (FlushRequest) returns (FlushResponse);
+  rpc Panic (PanicRequest) returns (PanicResponse);
+  rpc Health (HealthRequest) returns (HealthResponse);
+}
+
+message QueryRequest {
+  string sql = 1;
+}
+
+message QueryResponse {
+  bytes result = 1;
+}
+
+message FlushRequest {}
+message FlushResponse {}
+
+message PanicRequest {}
+message PanicResponse { bool healthy = 1; }
+
+message HealthRequest {}
+message HealthResponse { string info = 1; }
