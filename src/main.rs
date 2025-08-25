@@ -1,4 +1,10 @@
-use std::{convert::Infallible, fs, net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    convert::Infallible,
+    fs,
+    net::SocketAddr,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use cass::{
     Database,
@@ -23,6 +29,8 @@ use serde_json::Value;
 use sysinfo::System;
 use tonic::{Request, Response, Status, transport::Server};
 use tonic_prometheus_layer::{MetricsLayer, metrics as tl_metrics};
+use tracing::{Level, info};
+use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use url::Url;
 
 type DynStorage = Arc<dyn Storage>;
@@ -137,6 +145,9 @@ impl Cass for CassService {
         &self,
         _req: Request<HealthRequest>,
     ) -> Result<Response<HealthResponse>, Status> {
+        if !self.cluster.self_healthy().await {
+            return Err(Status::unavailable("unhealthy"));
+        }
         Ok(Response::new(HealthResponse {
             info: self.cluster.health_info().to_string(),
         }))
@@ -145,6 +156,12 @@ impl Cass for CassService {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let subscriber = FmtSubscriber::builder()
+        .with_env_filter(EnvFilter::from_default_env())
+        .with_max_level(Level::INFO)
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+
     let cli = Cli::parse();
     match cli.command {
         Command::Server(args) => run_server(args).await?,
@@ -251,9 +268,10 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
         }
     });
 
-    println!("Cass gRPC server listening on {addr}");
+    info!("Cass gRPC server listening on {addr}");
     Server::builder()
         .layer(metrics_layer)
+        .trace_fn(|req| tracing::info_span!("grpc", path = %req.uri().path()))
         .add_service(CassServer::new(svc))
         .serve(addr)
         .await?;
@@ -281,14 +299,25 @@ fn sstable_disk_usage(dir: &str) -> u64 {
 }
 
 async fn repl(nodes: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
-    use tokio::io::{self, AsyncBufReadExt};
-    let stdin = io::BufReader::new(io::stdin());
-    let mut lines = stdin.lines();
-    while let Some(line) = lines.next_line().await? {
+    use rustyline::{Editor, history::DefaultHistory};
+    let rl = Arc::new(Mutex::new(Editor::<(), DefaultHistory>::new()?));
+    loop {
+        let rl_clone = rl.clone();
+        let line = tokio::task::spawn_blocking(move || {
+            let mut rl = rl_clone.lock().unwrap();
+            let line = rl.readline("> ");
+            if let Ok(ref l) = line {
+                let _ = rl.add_history_entry(l.as_str());
+            }
+            line
+        })
+        .await??;
+
         let sql = line.trim();
         if sql.is_empty() {
             continue;
         }
+
         let mut last_err: Option<Status> = None;
         for node in &nodes {
             match CassClient::connect(node.clone()).await {
@@ -319,5 +348,4 @@ async fn repl(nodes: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("query failed: {}", err.message());
         }
     }
-    Ok(())
 }

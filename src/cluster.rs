@@ -74,11 +74,16 @@ impl Cluster {
                 idx = (idx + 1) % gossip_peers.len();
                 let peer = &gossip_peers[idx];
                 if peer != &gossip_addr {
-                    if let Ok(mut client) = CassClient::connect(peer.clone()).await {
-                        if client.health(Request::new(HealthRequest {})).await.is_ok() {
-                            let mut map = gossip_health.write().await;
-                            map.insert(peer.clone(), Instant::now());
-                        }
+                    let ok = if let Ok(mut client) = CassClient::connect(peer.clone()).await {
+                        client.health(Request::new(HealthRequest {})).await.is_ok()
+                    } else {
+                        false
+                    };
+                    let mut map = gossip_health.write().await;
+                    if ok {
+                        map.insert(peer.clone(), Instant::now());
+                    } else {
+                        map.insert(peer.clone(), Instant::now() - Duration::from_secs(9));
                     }
                 }
                 sleep(Duration::from_secs(1)).await;

@@ -109,7 +109,7 @@ async fn errors_when_not_enough_healthy_replicas() {
 
     child2.kill().unwrap();
 
-    thread::sleep(Duration::from_secs(9));
+    thread::sleep(Duration::from_secs(1));
 
     let res = c1
         .query(QueryRequest {
