@@ -280,6 +280,7 @@ impl Cluster {
                             object_type: ObjectType::Table,
                             ..
                         }
+                        | Statement::ShowTables { .. }
                 )
             });
             is_write = stmts.iter().any(|s| {
