@@ -5,16 +5,81 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::rpc::{FlushRequest, HealthRequest, QueryRequest, cass_client::CassClient};
+use crate::rpc::{
+    FlushRequest, HealthRequest, MetaResult, MetaRow, MutationResult, QueryRequest, QueryResponse,
+    ResultSet, Row as RpcRow, ShowTablesResult, cass_client::CassClient, query_response,
+};
 use futures::future::join_all;
 use murmur3::murmur3_32;
 use tonic::Request;
 
-use crate::{Database, SqlEngine, query::QueryError, storage::StorageError};
+use crate::{
+    Database, SqlEngine,
+    query::{QueryError, QueryOutput},
+    schema::decode_row,
+    storage::StorageError,
+};
 use serde_json::{Value, json};
 use sqlparser::ast::{ObjectType, Statement};
 use sysinfo::Disks;
 use tokio::{sync::RwLock, time::sleep};
+
+fn output_to_proto(out: QueryOutput) -> QueryResponse {
+    match out {
+        QueryOutput::Mutation { op, unit, count } => QueryResponse {
+            payload: Some(query_response::Payload::Mutation(MutationResult {
+                op: op.to_string(),
+                unit: unit.to_string(),
+                count: count as u64,
+            })),
+        },
+        QueryOutput::Rows(rows) => {
+            let rpc_rows: Vec<RpcRow> = rows
+                .into_iter()
+                .map(|cols| RpcRow {
+                    columns: cols.into_iter().collect(),
+                })
+                .collect();
+            QueryResponse {
+                payload: Some(query_response::Payload::Rows(ResultSet { rows: rpc_rows })),
+            }
+        }
+        QueryOutput::Meta(rows) => {
+            let rpc_rows: Vec<MetaRow> = rows
+                .into_iter()
+                .map(|(key, ts, value)| MetaRow { key, ts, value })
+                .collect();
+            QueryResponse {
+                payload: Some(query_response::Payload::Meta(MetaResult { rows: rpc_rows })),
+            }
+        }
+        QueryOutput::Tables(tables) => QueryResponse {
+            payload: Some(query_response::Payload::Tables(ShowTablesResult { tables })),
+        },
+        QueryOutput::None => QueryResponse { payload: None },
+    }
+}
+
+fn proto_to_output(resp: QueryResponse) -> QueryOutput {
+    match resp.payload {
+        Some(query_response::Payload::Mutation(m)) => QueryOutput::Mutation {
+            op: m.op,
+            unit: m.unit,
+            count: m.count as usize,
+        },
+        Some(query_response::Payload::Rows(rs)) => QueryOutput::Rows(
+            rs.rows
+                .into_iter()
+                .map(|r| r.columns.into_iter().collect())
+                .collect(),
+        ),
+        Some(query_response::Payload::Meta(m)) => {
+            QueryOutput::Meta(m.rows.into_iter().map(|r| (r.key, r.ts, r.value)).collect())
+        }
+        Some(query_response::Payload::Tables(t)) => QueryOutput::Tables(t.tables),
+        None => QueryOutput::None,
+    }
+}
 
 /// Simple cluster management and request coordination.
 ///
@@ -247,7 +312,7 @@ impl Cluster {
     /// returned to the caller.  When `forwarded` is true the query is being
     /// handled on behalf of a peer and is executed locally without further
     /// replication.
-    pub async fn execute(&self, sql: &str, forwarded: bool) -> Result<Option<Vec<u8>>, QueryError> {
+    pub async fn execute(&self, sql: &str, forwarded: bool) -> Result<QueryResponse, QueryError> {
         let engine = SqlEngine::new();
         if forwarded {
             let (ts, real_sql) = if let Some(rest) = sql.strip_prefix("--ts:") {
@@ -260,7 +325,8 @@ impl Cluster {
             } else {
                 (0, sql)
             };
-            return engine.execute_with_ts(&self.db, real_sql, ts, true).await;
+            let out = engine.execute_with_ts(&self.db, real_sql, ts, true).await?;
+            return Ok(output_to_proto(out));
         }
 
         // Determine if the statement is a schema mutation that should be
@@ -339,7 +405,8 @@ impl Cluster {
 
         // Collect results from all replicas, performing last-write-wins per key.
         let mut rows: BTreeMap<String, (u64, String)> = BTreeMap::new();
-        let mut others: BTreeSet<String> = BTreeSet::new();
+        let mut table_set: BTreeSet<String> = BTreeSet::new();
+        let mut arr_rows: Vec<BTreeMap<String, String>> = Vec::new();
         let mut last_err: Option<QueryError> = None;
         let mut row_count: u64 = 0;
 
@@ -358,25 +425,14 @@ impl Cluster {
                     };
                     if node == self_addr {
                         let engine = SqlEngine::new();
-                        engine.execute_with_ts(&db, &sql_clone, ts, true).await
+                        engine.execute(&db, &sql_clone).await
                     } else {
                         match CassClient::connect(node.clone()).await {
-                            Ok(mut client) => {
-                                match client
-                                    .internal(Request::new(QueryRequest { sql: payload }))
-                                    .await
-                                {
-                                    Ok(resp) => {
-                                        let bytes = resp.into_inner().result;
-                                        if bytes.is_empty() {
-                                            Ok(None)
-                                        } else {
-                                            Ok(Some(bytes))
-                                        }
-                                    }
-                                    Err(e) => Err(QueryError::Other(e.to_string())),
-                                }
-                            }
+                            Ok(mut client) => client
+                                .internal(Request::new(QueryRequest { sql: payload }))
+                                .await
+                                .map(|resp| proto_to_output(resp.into_inner()))
+                                .map_err(|e| QueryError::Other(e.to_string())),
                             Err(e) => Err(QueryError::Other(e.to_string())),
                         }
                     }
@@ -386,34 +442,26 @@ impl Cluster {
 
         for resp in join_all(tasks).await {
             match resp {
-                Ok(Some(bytes)) => {
-                    if is_write {
-                        if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
-                            if let Some(c) = v.get("count").and_then(|c| c.as_u64()) {
-                                row_count = row_count.max(c);
-                            }
-                        }
-                    } else {
-                        let text = String::from_utf8_lossy(&bytes);
-                        for line in text.lines() {
-                            let parts: Vec<&str> = line.splitn(3, '\t').collect();
-                            if parts.len() == 3 {
-                                let key = parts[0].to_string();
-                                let ts: u64 = parts[1].parse().unwrap_or(0);
-                                let val = parts[2].to_string();
-                                match rows.get(&key) {
-                                    Some((cur_ts, _)) if *cur_ts >= ts => {}
-                                    _ => {
-                                        rows.insert(key, (ts, val));
-                                    }
-                                }
-                            } else if !line.is_empty() {
-                                others.insert(line.to_string());
+                Ok(QueryOutput::Meta(meta_rows)) => {
+                    for (key, ts, val) in meta_rows {
+                        match rows.get(&key) {
+                            Some((cur_ts, _)) if *cur_ts >= ts => {}
+                            _ => {
+                                rows.insert(key, (ts, val));
                             }
                         }
                     }
                 }
-                Ok(None) => {}
+                Ok(QueryOutput::Mutation { count, .. }) => {
+                    row_count = row_count.max(count as u64);
+                }
+                Ok(QueryOutput::Tables(tables)) => {
+                    for t in tables {
+                        table_set.insert(t);
+                    }
+                }
+                Ok(QueryOutput::Rows(r)) => arr_rows.extend(r),
+                Ok(QueryOutput::None) => {}
                 Err(e) => last_err = Some(e),
             }
         }
@@ -427,42 +475,37 @@ impl Cluster {
                 }) => 1,
                 _ => row_count as usize,
             };
-            let obj = match first_stmt {
-                Some(Statement::Insert(_)) => json!({"op":"INSERT","unit":"row","count":count}),
-                Some(Statement::Update { .. }) => json!({"op":"UPDATE","unit":"row","count":count}),
-                Some(Statement::Delete(_)) => json!({"op":"DELETE","unit":"row","count":count}),
-                Some(Statement::CreateTable(_)) => {
-                    json!({"op":"CREATE TABLE","unit":"table","count":count})
-                }
+            let (op, unit) = match first_stmt {
+                Some(Statement::Insert(_)) => ("INSERT", "row"),
+                Some(Statement::Update { .. }) => ("UPDATE", "row"),
+                Some(Statement::Delete(_)) => ("DELETE", "row"),
+                Some(Statement::CreateTable(_)) => ("CREATE TABLE", "table"),
                 Some(Statement::Drop {
                     object_type: ObjectType::Table,
                     ..
-                }) => json!({"op":"DROP TABLE","unit":"table","count":count}),
-                _ => json!({"op":"UNKNOWN","unit":"","count":count}),
+                }) => ("DROP TABLE", "table"),
+                _ => ("UNKNOWN", ""),
             };
-            let bytes = serde_json::to_vec(&obj).map_err(|e| QueryError::Other(e.to_string()))?;
-            Ok(Some(bytes))
-        } else if !rows.is_empty() {
-            let mut arr: Vec<Value> = Vec::new();
+            Ok(output_to_proto(QueryOutput::Mutation {
+                op: op.to_string(),
+                unit: unit.to_string(),
+                count,
+            }))
+        } else if let Some(Statement::ShowTables { .. }) = first_stmt {
+            let tables: Vec<String> = table_set.into_iter().collect();
+            Ok(output_to_proto(QueryOutput::Tables(tables)))
+        } else if !rows.is_empty() || !arr_rows.is_empty() {
             for (_k, (_ts, val)) in rows {
                 if !val.is_empty() {
-                    if let Ok(v) = serde_json::from_str::<Value>(&val) {
-                        arr.push(v);
-                    }
+                    let map = decode_row(val.as_bytes());
+                    arr_rows.push(map);
                 }
             }
-            let bytes = serde_json::to_vec(&arr).map_err(|e| QueryError::Other(e.to_string()))?;
-            Ok(Some(bytes))
-        } else if !others.is_empty() {
-            if let Some(line) = others.into_iter().next() {
-                Ok(Some(line.into_bytes()))
-            } else {
-                Ok(Some(b"[]".to_vec()))
-            }
+            Ok(output_to_proto(QueryOutput::Rows(arr_rows)))
         } else if let Some(err) = last_err {
             Err(err)
         } else {
-            Ok(Some(b"[]".to_vec()))
+            Ok(output_to_proto(QueryOutput::Rows(Vec::new())))
         }
     }
 }

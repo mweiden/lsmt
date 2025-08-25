@@ -1,5 +1,4 @@
-use cass::rpc::{QueryRequest, cass_client::CassClient};
-use serde_json::{Value, json};
+use cass::rpc::{QueryRequest, cass_client::CassClient, query_response};
 use std::{
     process::{Command, Stdio},
     thread,
@@ -46,10 +45,14 @@ async fn grpc_query_roundtrip() {
         })
         .await
         .unwrap()
-        .into_inner()
-        .result;
-    let val: Value = serde_json::from_slice(&res).unwrap();
-    assert_eq!(val, json!([{ "val": "bar" }]));
+        .into_inner();
+    match res.payload {
+        Some(query_response::Payload::Rows(rs)) => {
+            assert_eq!(rs.rows.len(), 1);
+            assert_eq!(rs.rows[0].columns.get("val"), Some(&"bar".to_string()));
+        }
+        _ => panic!("unexpected response"),
+    }
 
     let count = client
         .query(QueryRequest {
@@ -57,10 +60,14 @@ async fn grpc_query_roundtrip() {
         })
         .await
         .unwrap()
-        .into_inner()
-        .result;
-    let cnt: Value = serde_json::from_slice(&count).unwrap();
-    assert_eq!(cnt, json!([{"count":1}]));
+        .into_inner();
+    match count.payload {
+        Some(query_response::Payload::Rows(rs)) => {
+            assert_eq!(rs.rows.len(), 1);
+            assert_eq!(rs.rows[0].columns.get("count"), Some(&"1".to_string()));
+        }
+        _ => panic!("unexpected count response"),
+    }
 
     child.kill().unwrap();
 }

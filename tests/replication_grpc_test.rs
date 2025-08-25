@@ -4,8 +4,7 @@ use std::{
     time::Duration,
 };
 
-use cass::rpc::{QueryRequest, cass_client::CassClient};
-use serde_json::{Value, json};
+use cass::rpc::{QueryRequest, cass_client::CassClient, query_response};
 
 #[tokio::test]
 async fn union_and_lww_across_replicas() {
@@ -89,10 +88,13 @@ async fn union_and_lww_across_replicas() {
         })
         .await
         .unwrap()
-        .into_inner()
-        .result;
-    let val_a: Value = serde_json::from_slice(&res_a).unwrap();
-    assert_eq!(val_a, json!([{ "val": "va2" }]));
+        .into_inner();
+    match res_a.payload {
+        Some(query_response::Payload::Rows(rs)) => {
+            assert_eq!(rs.rows[0].columns.get("val"), Some(&"va2".to_string()));
+        }
+        _ => panic!("unexpected"),
+    }
 
     let res_b = c1
         .query(QueryRequest {
@@ -100,10 +102,13 @@ async fn union_and_lww_across_replicas() {
         })
         .await
         .unwrap()
-        .into_inner()
-        .result;
-    let val_b: Value = serde_json::from_slice(&res_b).unwrap();
-    assert_eq!(val_b, json!([{ "val": "vb" }]));
+        .into_inner();
+    match res_b.payload {
+        Some(query_response::Payload::Rows(rs)) => {
+            assert_eq!(rs.rows[0].columns.get("val"), Some(&"vb".to_string()));
+        }
+        _ => panic!("unexpected"),
+    }
 
     let res_c = c1
         .query(QueryRequest {
@@ -111,10 +116,13 @@ async fn union_and_lww_across_replicas() {
         })
         .await
         .unwrap()
-        .into_inner()
-        .result;
-    let val_c: Value = serde_json::from_slice(&res_c).unwrap();
-    assert_eq!(val_c, json!([{ "val": "va2" }, { "val": "vb" }]));
+        .into_inner();
+    match res_c.payload {
+        Some(query_response::Payload::Rows(rs)) => {
+            assert_eq!(rs.rows.len(), 2);
+        }
+        _ => panic!("unexpected"),
+    }
 
     let ack = c1
         .query(QueryRequest {
@@ -122,10 +130,14 @@ async fn union_and_lww_across_replicas() {
         })
         .await
         .unwrap()
-        .into_inner()
-        .result;
-    let v: Value = serde_json::from_slice(&ack).unwrap();
-    assert_eq!(v, json!({"op":"INSERT","unit":"row","count":2}));
+        .into_inner();
+    match ack.payload {
+        Some(query_response::Payload::Mutation(m)) => {
+            assert_eq!(m.op, "INSERT");
+            assert_eq!(m.count, 2);
+        }
+        _ => panic!("unexpected ack"),
+    }
 
     child1.kill().unwrap();
     child2.kill().unwrap();

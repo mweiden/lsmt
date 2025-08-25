@@ -11,9 +11,10 @@ use cass::{
     cluster::Cluster,
     rpc::{
         FlushRequest, FlushResponse, HealthRequest, HealthResponse, PanicRequest, PanicResponse,
-        QueryRequest, QueryResponse,
+        QueryRequest, QueryResponse, Row as RpcRow,
         cass_client::CassClient,
         cass_server::{Cass, CassServer},
+        query_response,
     },
     storage::{Storage, local::LocalStorage, s3::S3Storage},
 };
@@ -25,7 +26,6 @@ use hyper::{
 };
 use once_cell::sync::Lazy;
 use prometheus::{Gauge, GaugeVec, register_gauge, register_gauge_vec};
-use serde_json::Value;
 use sysinfo::System;
 use tonic::{Request, Response, Status, transport::Server};
 use tonic_prometheus_layer::{MetricsLayer, metrics as tl_metrics};
@@ -46,6 +46,28 @@ static CPU_USAGE: Lazy<Gauge> =
 static SSTABLE_DISK_USAGE: Lazy<Gauge> = Lazy::new(|| {
     register_gauge!("sstable_disk_usage_bytes", "SSTable disk usage in bytes").unwrap()
 });
+
+fn print_rows(rows: &[RpcRow]) {
+    if rows.is_empty() {
+        println!("(0 rows)");
+        return;
+    }
+    let mut cols: Vec<String> = rows
+        .iter()
+        .flat_map(|r| r.columns.keys().cloned())
+        .collect();
+    cols.sort();
+    cols.dedup();
+    println!("{}", cols.join(" | "));
+    for row in rows {
+        let mut vals: Vec<String> = Vec::new();
+        for c in &cols {
+            vals.push(row.columns.get(c).cloned().unwrap_or_default());
+        }
+        println!("{}", vals.join(" | "));
+    }
+    println!("({} rows)", rows.len());
+}
 
 #[derive(Parser)]
 #[command(name = "cass")]
@@ -100,8 +122,7 @@ impl Cass for CassService {
     async fn query(&self, req: Request<QueryRequest>) -> Result<Response<QueryResponse>, Status> {
         let sql = req.into_inner().sql;
         match self.cluster.execute(&sql, false).await {
-            Ok(Some(bytes)) => Ok(Response::new(QueryResponse { result: bytes })),
-            Ok(None) => Ok(Response::new(QueryResponse { result: Vec::new() })),
+            Ok(resp) => Ok(Response::new(resp)),
             Err(e) => Err(Status::invalid_argument(e.to_string())),
         }
     }
@@ -112,8 +133,7 @@ impl Cass for CassService {
     ) -> Result<Response<QueryResponse>, Status> {
         let sql = req.into_inner().sql;
         match self.cluster.execute(&sql, true).await {
-            Ok(Some(bytes)) => Ok(Response::new(QueryResponse { result: bytes })),
-            Ok(None) => Ok(Response::new(QueryResponse { result: Vec::new() })),
+            Ok(resp) => Ok(Response::new(resp)),
             Err(e) => Err(Status::invalid_argument(e.to_string())),
         }
     }
@@ -334,13 +354,19 @@ async fn repl(nodes: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
                     .await
                 {
                     Ok(resp) => {
-                        let bytes = resp.into_inner().result;
-                        if bytes.is_empty() {
-                            println!("");
-                        } else if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
-                            println!("{}", serde_json::to_string_pretty(&v).unwrap());
-                        } else {
-                            println!("{}", String::from_utf8_lossy(&bytes));
+                        let resp = resp.into_inner();
+                        match resp.payload {
+                            Some(query_response::Payload::Rows(rs)) => print_rows(&rs.rows),
+                            Some(query_response::Payload::Mutation(m)) => {
+                                println!("{} {} {}", m.op, m.count, m.unit);
+                            }
+                            Some(query_response::Payload::Tables(t)) => {
+                                for tbl in &t.tables {
+                                    println!("{}", tbl);
+                                }
+                                println!("({} tables)", t.tables.len());
+                            }
+                            _ => println!(""),
                         }
                         last_err = None;
                         break;

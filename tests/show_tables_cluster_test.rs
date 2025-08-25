@@ -1,5 +1,4 @@
-use cass::rpc::{PanicRequest, QueryRequest, cass_client::CassClient};
-use serde_json::Value;
+use cass::rpc::{PanicRequest, QueryRequest, cass_client::CassClient, query_response};
 use std::{
     process::{Command, Stdio},
     thread,
@@ -76,10 +75,13 @@ async fn show_tables_with_unhealthy_replica() {
         })
         .await
         .unwrap()
-        .into_inner()
-        .result;
-    let v: Value = serde_json::from_slice(&res).unwrap();
-    assert_eq!(v, Value::Array(vec![Value::String("kv".into())]));
+        .into_inner();
+    match res.payload {
+        Some(query_response::Payload::Tables(t)) => {
+            assert_eq!(t.tables, vec!["kv".to_string()]);
+        }
+        _ => panic!("unexpected"),
+    }
 
     child1.kill().unwrap();
     child2.kill().unwrap();
