@@ -29,6 +29,7 @@ use serde_json::Value;
 use sysinfo::System;
 use tonic::{Request, Response, Status, transport::Server};
 use tonic_prometheus_layer::{MetricsLayer, metrics as tl_metrics};
+use tower_http::trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tracing::{Level, info};
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
 use url::Url;
@@ -157,10 +158,11 @@ impl Cass for CassService {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = FmtSubscriber::builder()
-        .with_env_filter(EnvFilter::from_default_env())
-        .with_max_level(Level::INFO)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .finish();
-    let _ = tracing::subscriber::set_global_default(subscriber);
+    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
     let cli = Cli::parse();
     match cli.command {
@@ -269,9 +271,13 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
     });
 
     info!("Cass gRPC server listening on {addr}");
+    let trace_layer = TraceLayer::new_for_grpc()
+        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+        .on_request(DefaultOnRequest::new().level(Level::INFO))
+        .on_response(DefaultOnResponse::new().level(Level::INFO));
     Server::builder()
         .layer(metrics_layer)
-        .trace_fn(|req| tracing::info_span!("grpc", path = %req.uri().path()))
+        .layer(trace_layer)
         .add_service(CassServer::new(svc))
         .serve(addr)
         .await?;
