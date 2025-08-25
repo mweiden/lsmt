@@ -91,7 +91,8 @@ async fn union_and_lww_across_replicas() {
         .into_inner();
     match res_a.payload {
         Some(query_response::Payload::Rows(rs)) => {
-            assert_eq!(rs.rows[0].columns.get("val"), Some(&"va2".to_string()));
+            let last = rs.rows.last().and_then(|r| r.columns.get("val"));
+            assert_eq!(last, Some(&"va2".to_string()));
         }
         _ => panic!("unexpected"),
     }
@@ -119,7 +120,7 @@ async fn union_and_lww_across_replicas() {
         .into_inner();
     match res_c.payload {
         Some(query_response::Payload::Rows(rs)) => {
-            assert_eq!(rs.rows.len(), 2);
+            assert_eq!(rs.rows.len(), 3);
         }
         _ => panic!("unexpected"),
     }

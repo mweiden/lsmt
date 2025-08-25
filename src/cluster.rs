@@ -418,15 +418,15 @@ impl Cluster {
                 let self_addr = self.self_addr.clone();
                 let sql_clone = sql_string.clone();
                 async move {
-                    let payload = if ts > 0 {
-                        format!("--ts:{}\n{}", ts, sql_clone.clone())
-                    } else {
-                        sql_clone.clone()
-                    };
                     if node == self_addr {
                         let engine = SqlEngine::new();
-                        engine.execute(&db, &sql_clone).await
+                        engine.execute_with_ts(&db, &sql_clone, ts, true).await
                     } else {
+                        let payload = if ts > 0 {
+                            format!("--ts:{}\n{}", ts, sql_clone.clone())
+                        } else {
+                            sql_clone.clone()
+                        };
                         match CassClient::connect(node.clone()).await {
                             Ok(mut client) => client
                                 .internal(Request::new(QueryRequest { sql: payload }))
