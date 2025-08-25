@@ -17,7 +17,8 @@ use hyper::{
     header::{CONTENT_TYPE, HeaderValue},
     service::{make_service_fn, service_fn},
 };
-use metrics::{describe_gauge, gauge};
+use once_cell::sync::Lazy;
+use prometheus::{Gauge, GaugeVec, register_gauge, register_gauge_vec};
 use serde_json::Value;
 use sysinfo::System;
 use tonic::{Request, Response, Status, transport::Server};
@@ -25,6 +26,17 @@ use tonic_prometheus_layer::{MetricsLayer, metrics as tl_metrics};
 use url::Url;
 
 type DynStorage = Arc<dyn Storage>;
+
+static NODE_HEALTH: Lazy<GaugeVec> = Lazy::new(|| {
+    register_gauge_vec!("node_health", "Health status of peer nodes", &["peer"]).unwrap()
+});
+static RAM_USAGE: Lazy<Gauge> =
+    Lazy::new(|| register_gauge!("ram_usage_bytes", "RAM usage in bytes").unwrap());
+static CPU_USAGE: Lazy<Gauge> =
+    Lazy::new(|| register_gauge!("cpu_usage_percent", "CPU usage percentage").unwrap());
+static SSTABLE_DISK_USAGE: Lazy<Gauge> = Lazy::new(|| {
+    register_gauge!("sstable_disk_usage_bytes", "SSTable disk usage in bytes").unwrap()
+});
 
 #[derive(Parser)]
 #[command(name = "cass")]
@@ -173,11 +185,11 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
         args.rf,
     ));
 
-    tl_metrics::try_init_settings(Default::default()).ok();
-    describe_gauge!("node_health", "Health status of peer nodes");
-    describe_gauge!("ram_usage_bytes", "RAM usage in bytes");
-    describe_gauge!("cpu_usage_percent", "CPU usage percentage");
-    describe_gauge!("sstable_disk_usage_bytes", "SSTable disk usage in bytes");
+    tl_metrics::try_init_settings(tl_metrics::GlobalSettings {
+        registry: prometheus::default_registry().clone(),
+        ..Default::default()
+    })
+    .ok();
 
     let svc = CassService {
         cluster: cluster.clone(),
@@ -201,28 +213,24 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
                     let data_dir = data_dir.clone();
                     async move {
                         for (peer, alive) in cluster.peer_health().await {
-                            gauge!("node_health", "peer" => peer).set(if alive {
-                                1.0
-                            } else {
-                                0.0
-                            });
+                            NODE_HEALTH
+                                .with_label_values(&[peer.as_str()])
+                                .set(if alive { 1.0 } else { 0.0 });
                         }
                         let self_addr = cluster.self_addr().to_string();
                         let self_alive = cluster.self_healthy().await;
-                        gauge!("node_health", "peer" => self_addr).set(if self_alive {
-                            1.0
-                        } else {
-                            0.0
-                        });
+                        NODE_HEALTH
+                            .with_label_values(&[self_addr.as_str()])
+                            .set(if self_alive { 1.0 } else { 0.0 });
                         let mut sys = System::new_all();
                         sys.refresh_memory();
                         sys.refresh_cpu();
                         let ram = sys.used_memory() as f64 * 1024.0;
                         let cpu = sys.global_cpu_info().cpu_usage() as f64;
-                        gauge!("ram_usage_bytes").set(ram);
-                        gauge!("cpu_usage_percent").set(cpu);
+                        RAM_USAGE.set(ram);
+                        CPU_USAGE.set(cpu);
                         let disk = sstable_disk_usage(&data_dir) as f64;
-                        gauge!("sstable_disk_usage_bytes").set(disk);
+                        SSTABLE_DISK_USAGE.set(disk);
 
                         let body = tl_metrics::encode_to_string().unwrap_or_default();
                         let response = HttpResponse::builder()
