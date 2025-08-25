@@ -1,4 +1,4 @@
-use std::{convert::Infallible, net::SocketAddr, sync::Arc};
+use std::{convert::Infallible, fs, net::SocketAddr, path::Path, sync::Arc};
 
 use cass::{
     Database,
@@ -17,9 +17,11 @@ use hyper::{
     header::{CONTENT_TYPE, HeaderValue},
     service::{make_service_fn, service_fn},
 };
+use metrics::{describe_gauge, gauge};
 use serde_json::Value;
+use sysinfo::System;
 use tonic::{Request, Response, Status, transport::Server};
-use tonic_prometheus_layer::{MetricsLayer, metrics};
+use tonic_prometheus_layer::{MetricsLayer, metrics as tl_metrics};
 use url::Url;
 
 type DynStorage = Arc<dyn Storage>;
@@ -149,8 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let data_dir = args.data_dir.clone();
     let storage: DynStorage = match args.storage {
-        StorageKind::Local => Arc::new(LocalStorage::new(&args.data_dir)),
+        StorageKind::Local => Arc::new(LocalStorage::new(&data_dir)),
         StorageKind::S3 => {
             let bucket = args.bucket.ok_or_else(|| {
                 std::io::Error::new(
@@ -170,28 +173,69 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
         args.rf,
     ));
 
-    let svc = CassService { cluster };
+    tl_metrics::try_init_settings(Default::default()).ok();
+    describe_gauge!("node_health", "Health status of peer nodes");
+    describe_gauge!("ram_usage_bytes", "RAM usage in bytes");
+    describe_gauge!("cpu_usage_percent", "CPU usage percentage");
+    describe_gauge!("sstable_disk_usage_bytes", "SSTable disk usage in bytes");
+
+    let svc = CassService {
+        cluster: cluster.clone(),
+    };
     let url = Url::parse(&args.node_addr)?;
     let port = url.port().unwrap_or(80);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let metrics_addr = SocketAddr::from(([0, 0, 0, 0], port + 1000));
 
-    metrics::try_init_settings(Default::default()).ok();
     let metrics_layer = MetricsLayer::new();
 
+    let cluster_metrics = cluster.clone();
+    let data_dir_metrics = data_dir.clone();
     tokio::spawn(async move {
-        let make_svc = make_service_fn(|_| async {
-            Ok::<_, Infallible>(service_fn(|_req: HttpRequest<HttpBody>| async {
-                let body = metrics::encode_to_string().unwrap_or_default();
-                let response = HttpResponse::builder()
-                    .header(
-                        CONTENT_TYPE,
-                        HeaderValue::from_static("text/plain; version=0.0.4"),
-                    )
-                    .body(HttpBody::from(body))
-                    .unwrap();
-                Ok::<_, Infallible>(response)
-            }))
+        let make_svc = make_service_fn(move |_| {
+            let cluster = cluster_metrics.clone();
+            let data_dir = data_dir_metrics.clone();
+            async move {
+                Ok::<_, Infallible>(service_fn(move |_req: HttpRequest<HttpBody>| {
+                    let cluster = cluster.clone();
+                    let data_dir = data_dir.clone();
+                    async move {
+                        for (peer, alive) in cluster.peer_health().await {
+                            gauge!("node_health", "peer" => peer).set(if alive {
+                                1.0
+                            } else {
+                                0.0
+                            });
+                        }
+                        let self_addr = cluster.self_addr().to_string();
+                        let self_alive = cluster.self_healthy().await;
+                        gauge!("node_health", "peer" => self_addr).set(if self_alive {
+                            1.0
+                        } else {
+                            0.0
+                        });
+                        let mut sys = System::new_all();
+                        sys.refresh_memory();
+                        sys.refresh_cpu();
+                        let ram = sys.used_memory() as f64 * 1024.0;
+                        let cpu = sys.global_cpu_info().cpu_usage() as f64;
+                        gauge!("ram_usage_bytes").set(ram);
+                        gauge!("cpu_usage_percent").set(cpu);
+                        let disk = sstable_disk_usage(&data_dir) as f64;
+                        gauge!("sstable_disk_usage_bytes").set(disk);
+
+                        let body = tl_metrics::encode_to_string().unwrap_or_default();
+                        let response = HttpResponse::builder()
+                            .header(
+                                CONTENT_TYPE,
+                                HeaderValue::from_static("text/plain; version=0.0.4"),
+                            )
+                            .body(HttpBody::from(body))
+                            .unwrap();
+                        Ok::<_, Infallible>(response)
+                    }
+                }))
+            }
         });
 
         if let Err(e) = HyperServer::bind(&metrics_addr).serve(make_svc).await {
@@ -206,6 +250,26 @@ async fn run_server(args: ServerArgs) -> Result<(), Box<dyn std::error::Error>> 
         .serve(addr)
         .await?;
     Ok(())
+}
+
+fn sstable_disk_usage(dir: &str) -> u64 {
+    fn visit(path: &Path) -> u64 {
+        let mut size = 0;
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    size += visit(&p);
+                } else if p.extension().and_then(|e| e.to_str()) == Some("sst") {
+                    if let Ok(meta) = entry.metadata() {
+                        size += meta.len();
+                    }
+                }
+            }
+        }
+        size
+    }
+    visit(Path::new(dir))
 }
 
 async fn repl(nodes: Vec<String>) -> Result<(), Box<dyn std::error::Error>> {
